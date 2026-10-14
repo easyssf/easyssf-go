@@ -1,0 +1,55 @@
+# Runs the receiver conformance tests of the conformance module against the OpenID conformance
+# suite, which testcontainers-go starts on the runner. One job per test plan, each with its own
+# suite. See conformance/README.md for the plans and the suite image.
+name: Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite-image:
+        description: Conformance suite image. Empty for the one conformance/settings.go names.
+        required: false
+        default: ''
+      nginx-image:
+        description: Its nginx image. Empty for the one conformance/settings.go names.
+        required: false
+        default: ''
+  schedule:
+    - cron: '17 3 * * *'   # 03:17 UTC, every night
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        plan:
+          - TestSSF10PushPlan
+          - TestSSF10PollPlan
+          - TestCaepInterop10PushPlan
+          - TestCaepInterop10PollPlan
+    name: ${{ matrix.plan }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: conformance/go.mod
+      - name: Run the ${{ matrix.plan }} plan
+        working-directory: conformance
+        env:
+          EASYSSF_CONFORMANCE_TESTS: "true"
+          CTS_SUITE_IMAGE: ${{ inputs.suite-image }}
+          CTS_SUITE_NGINX_IMAGE: ${{ inputs.nginx-image }}
+        run: go test -count=1 -run '^${{ matrix.plan }}$' -timeout 80m -v . 2>&1 | tee ../conformance-${{ matrix.plan }}.log
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.plan }}
+          path: conformance-${{ matrix.plan }}.log
+          if-no-files-found: ignore
+          retention-days: 14

@@ -45,6 +45,8 @@ type HTTPJWKSetSource struct {
 	RefreshRateLimit time.Duration
 	// Clock is the clock the cache ages by; the system clock by default.
 	Clock Clock
+	// Timeout is how long a fetch waits for the response; DefaultHTTPTimeout if zero.
+	Timeout time.Duration
 
 	client  *http.Client
 	fixed   *url.URL
@@ -97,7 +99,7 @@ func (s *HTTPJWKSetSource) JWKSet(ctx context.Context, refresh bool) (*jose.JSON
 			s.url = u
 		}
 	}
-	body, err := getJSON(ctx, s.client, s.url, "application/jwk-set+json, application/json")
+	body, err := getJSON(ctx, s.client, s.Timeout, s.url, "application/jwk-set+json, application/json")
 	if err != nil {
 		return nil, Unavailable(err, "could not retrieve the keys to verify the SET from %s", s.url)
 	}

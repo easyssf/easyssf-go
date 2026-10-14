@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +71,10 @@ type Config struct {
 	Dedup DedupConfig `json:"dedup" yaml:"dedup" mapstructure:"dedup"`
 	// Revocation configures the revocation of access tokens and sessions by security events.
 	Revocation RevocationConfig `json:"revocation" yaml:"revocation" mapstructure:"revocation"`
+	// SessionTermination configures the termination of server-side sessions by security events.
+	SessionTermination SessionTerminationConfig `json:"session-termination" yaml:"session-termination" mapstructure:"session-termination"`
+	// Data configures the database stores of receiver/sqlstore, when the application uses them.
+	Data DataConfig `json:"data" yaml:"data" mapstructure:"data"`
 }
 
 // DefaultTransmitterName is the name of the transmitter configured at easyssf.receiver.
@@ -109,13 +114,38 @@ type TransmitterConfig struct {
 
 // OAuth2Config is the client credentials grant for the transmitter's endpoints.
 type OAuth2Config struct {
-	TokenURI                   string            `json:"token-uri" yaml:"token-uri" mapstructure:"token-uri"`
-	ClientID                   string            `json:"client-id" yaml:"client-id" mapstructure:"client-id"`
-	ClientSecret               string            `json:"client-secret" yaml:"client-secret" mapstructure:"client-secret"`
-	Scopes                     []string          `json:"scopes" yaml:"scopes" mapstructure:"scopes"`
-	ClientAuthenticationMethod string            `json:"client-authentication-method" yaml:"client-authentication-method" mapstructure:"client-authentication-method"`
-	ExpirySafetyWindow         Duration          `json:"expiry-safety-window" yaml:"expiry-safety-window" mapstructure:"expiry-safety-window"`
-	AdditionalParameters       map[string]string `json:"additional-parameters" yaml:"additional-parameters" mapstructure:"additional-parameters"`
+	// TokenURI is the token endpoint to obtain access tokens from with the client credentials
+	// grant.
+	TokenURI string `json:"token-uri" yaml:"token-uri" mapstructure:"token-uri"`
+	// ClientID is the client id of this receiver.
+	ClientID string `json:"client-id" yaml:"client-id" mapstructure:"client-id"`
+	// ClientSecret is the client secret of this receiver.
+	ClientSecret string `json:"client-secret" yaml:"client-secret" mapstructure:"client-secret"`
+	// Scopes are the scopes to request.
+	Scopes []string `json:"scopes" yaml:"scopes" mapstructure:"scopes"`
+	// ClientAuthenticationMethod is how the client authenticates at the token endpoint (RFC
+	// 6749, section 2.3.1): client_secret_basic (also "basic", the default) or
+	// client_secret_post (also "post").
+	ClientAuthenticationMethod string `json:"client-authentication-method" yaml:"client-authentication-method" mapstructure:"client-authentication-method"`
+	// ExpirySafetyWindow is how long before its expiry an access token is renewed; never more
+	// than a quarter of the token's lifetime.
+	ExpirySafetyWindow Duration `json:"expiry-safety-window" yaml:"expiry-safety-window" mapstructure:"expiry-safety-window"`
+	// AdditionalParameters are form parameters to send with the token request in addition to
+	// the grant.
+	AdditionalParameters map[string]string `json:"additional-parameters" yaml:"additional-parameters" mapstructure:"additional-parameters"`
+}
+
+// AuthenticatesWithRequestBody says whether the client credentials are sent in the request
+// body (client_secret_post) rather than with HTTP basic authentication; ok is false for an
+// unknown method.
+func (c *OAuth2Config) AuthenticatesWithRequestBody() (post bool, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(c.ClientAuthenticationMethod)) {
+	case "", "basic", "client_secret_basic":
+		return false, true
+	case "post", "client_secret_post":
+		return true, true
+	}
+	return false, false
 }
 
 // Stream management modes.
@@ -143,20 +173,34 @@ type StreamConfig struct {
 
 // PollConfig configures poll delivery (RFC 8936).
 type PollConfig struct {
-	EndpointURL     string          `json:"endpoint-url" yaml:"endpoint-url" mapstructure:"endpoint-url"`
-	AutoStartup     bool            `json:"auto-startup" yaml:"auto-startup" mapstructure:"auto-startup"`
-	Interval        Duration        `json:"interval" yaml:"interval" mapstructure:"interval"`
-	InitialDelay    Duration        `json:"initial-delay" yaml:"initial-delay" mapstructure:"initial-delay"`
-	MaxEvents       int             `json:"max-events" yaml:"max-events" mapstructure:"max-events"`
-	LongPolling     bool            `json:"long-polling" yaml:"long-polling" mapstructure:"long-polling"`
-	LongPollingHold Duration        `json:"long-polling-hold" yaml:"long-polling-hold" mapstructure:"long-polling-hold"`
-	RateLimit       RateLimitConfig `json:"rate-limit" yaml:"rate-limit" mapstructure:"rate-limit"`
+	// EndpointURL is the poll endpoint of the stream, if the stream is not looked up or
+	// registered by the receiver.
+	EndpointURL string `json:"endpoint-url" yaml:"endpoint-url" mapstructure:"endpoint-url"`
+	// AutoStartup says whether polling starts with the receiver; true by default.
+	AutoStartup bool `json:"auto-startup" yaml:"auto-startup" mapstructure:"auto-startup"`
+	// Interval is the time between two polls, 10 seconds by default.
+	Interval Duration `json:"interval" yaml:"interval" mapstructure:"interval"`
+	// InitialDelay is how long the first poll waits after the start.
+	InitialDelay Duration `json:"initial-delay" yaml:"initial-delay" mapstructure:"initial-delay"`
+	// MaxEvents is the maximum number of SETs fetched with one request, 100 by default.
+	MaxEvents int `json:"max-events" yaml:"max-events" mapstructure:"max-events"`
+	// LongPolling asks the transmitter to hold a request until SETs are available (RFC 8936,
+	// section 2.5).
+	LongPolling bool `json:"long-polling" yaml:"long-polling" mapstructure:"long-polling"`
+	// LongPollingHold is how long the transmitter holds a request, 30 seconds by default.
+	LongPollingHold Duration `json:"long-polling-hold" yaml:"long-polling-hold" mapstructure:"long-polling-hold"`
+	// RateLimit is how the poller backs off on 429 and Retry-After.
+	RateLimit RateLimitConfig `json:"rate-limit" yaml:"rate-limit" mapstructure:"rate-limit"`
 }
 
 // RateLimitConfig is how the poller backs off on 429 and Retry-After.
 type RateLimitConfig struct {
+	// FallbackBackoff is how long to pause after a 429 without a Retry-After header; zero
+	// polls again at the regular interval.
 	FallbackBackoff Duration `json:"fallback-backoff" yaml:"fallback-backoff" mapstructure:"fallback-backoff"`
-	MaxBackoff      Duration `json:"max-backoff" yaml:"max-backoff" mapstructure:"max-backoff"`
+	// MaxBackoff is the longest pause a Retry-After header or the fallback can cause, 5
+	// minutes by default.
+	MaxBackoff Duration `json:"max-backoff" yaml:"max-backoff" mapstructure:"max-backoff"`
 }
 
 // SetValidationConfig configures how SETs are verified.
@@ -189,24 +233,134 @@ type PushConfig struct {
 
 // HTTPConfig configures the calls to the transmitter.
 type HTTPConfig struct {
-	Timeout   Duration `json:"timeout" yaml:"timeout" mapstructure:"timeout"`
-	UserAgent string   `json:"user-agent" yaml:"user-agent" mapstructure:"user-agent"`
+	// Timeout is how long a call to the transmitter waits for its response, 5 seconds by
+	// default. A long poll waits for its hold time plus a margin regardless.
+	Timeout Duration `json:"timeout" yaml:"timeout" mapstructure:"timeout"`
+	// UserAgent is the User-Agent header to send with calls to the transmitter; Go's default
+	// when empty.
+	UserAgent string `json:"user-agent" yaml:"user-agent" mapstructure:"user-agent"`
 }
 
 // DedupConfig configures the de-duplication of SETs.
 type DedupConfig struct {
-	Enabled   bool     `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
-	Capacity  int      `json:"capacity" yaml:"capacity" mapstructure:"capacity"`
+	// Enabled says whether SETs that were already processed are skipped.
+	Enabled bool `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
+	// Capacity is the number of SET identifiers the in-memory store remembers.
+	Capacity int `json:"capacity" yaml:"capacity" mapstructure:"capacity"`
+	// Retention is how long a durable store remembers a processed SET, 7 days by default. Has
+	// to cover the time the transmitter keeps trying to deliver a SET.
 	Retention Duration `json:"retention" yaml:"retention" mapstructure:"retention"`
-	Lease     Duration `json:"lease" yaml:"lease" mapstructure:"lease"`
+	// Lease is how long a SET counts as being handled by the instance that claimed it without
+	// renewing the claim, which it does every third of this time while its handlers run.
+	Lease Duration `json:"lease" yaml:"lease" mapstructure:"lease"`
 }
 
 // RevocationConfig configures the revocation of tokens and sessions, see revocation.go.
 type RevocationConfig struct {
-	Enabled           bool     `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
+	// Enabled says whether revocations are recorded.
+	Enabled bool `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
+	// SessionEventTypes (alias or URI) revoke the session they name, or all tokens of the user
+	// issued up to the event if they name none; CaepSessionRevoked when empty.
 	SessionEventTypes []string `json:"session-event-types" yaml:"session-event-types" mapstructure:"session-event-types"`
-	UserEventTypes    []string `json:"user-event-types" yaml:"user-event-types" mapstructure:"user-event-types"`
-	TTL               Duration `json:"ttl" yaml:"ttl" mapstructure:"ttl"`
+	// UserEventTypes (alias or URI) revoke all tokens of the user they name; none by default.
+	UserEventTypes []string `json:"user-event-types" yaml:"user-event-types" mapstructure:"user-event-types"`
+	// TTL is how long a revocation is remembered, at least the maximum lifetime of the access
+	// tokens and sessions it guards; 24 hours by default.
+	TTL Duration `json:"ttl" yaml:"ttl" mapstructure:"ttl"`
+}
+
+// SessionTerminationConfig configures the termination of server-side sessions by security
+// events, through the SessionTerminator given with WithSessionTerminator. Without one, nothing
+// is terminated.
+type SessionTerminationConfig struct {
+	// Enabled says whether local sessions are terminated when a matching event is received and
+	// a session terminator is given.
+	Enabled bool `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
+	// SessionEventTypes (alias or URI) terminate the sessions identified by the event's subject
+	// (session id and / or user); CaepSessionRevoked when empty.
+	SessionEventTypes []string `json:"session-event-types" yaml:"session-event-types" mapstructure:"session-event-types"`
+	// UserEventTypes (alias or URI) terminate all sessions of the user identified by the
+	// event's subject; CaepCredentialChange when empty.
+	UserEventTypes []string `json:"user-event-types" yaml:"user-event-types" mapstructure:"user-event-types"`
+	// ScimAttributeClaims are the attributes of the scim subject of a SCIM Event (RFC 9967) and
+	// the claim of the logged-in user each is compared with, e.g. externalId: sub; the
+	// DefaultScimAttributeClaims when empty.
+	ScimAttributeClaims map[string]string `json:"scim-attribute-claims" yaml:"scim-attribute-claims" mapstructure:"scim-attribute-claims"`
+}
+
+// EffectiveScimAttributeClaims are the attribute-claim pairs a scim subject is matched by: the
+// configured ones, sorted by attribute, or DefaultScimAttributeClaims if none are configured.
+func (c *SessionTerminationConfig) EffectiveScimAttributeClaims() [][2]string {
+	if len(c.ScimAttributeClaims) == 0 {
+		return DefaultScimAttributeClaims
+	}
+	pairs := make([][2]string, 0, len(c.ScimAttributeClaims))
+	for attribute, claim := range c.ScimAttributeClaims {
+		pairs = append(pairs, [2]string{attribute, claim})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+	return pairs
+}
+
+// Schema initialization modes of DataConfig.
+const (
+	// SchemaEmbedded creates the tables only in an embedded database (SQLite), which has no
+	// migration tool of its own. The default.
+	SchemaEmbedded = "embedded"
+	// SchemaAlways creates a missing table and adds the columns of this release to a table of
+	// an older one.
+	SchemaAlways = "always"
+	// SchemaNever never touches the tables: the application creates them with the SQL that
+	// ships with the stores. A missing or outdated table fails the start with the statements
+	// to run.
+	SchemaNever = "never"
+)
+
+// DataConfig configures the database stores of receiver/sqlstore, which keep processed SETs,
+// revocations and the acknowledgements a poller owes in the database of the application,
+// shared by all its instances.
+type DataConfig struct {
+	// Enabled says whether the database stores are used. false keeps the state of the receiver
+	// in memory although the stores were added, for example in a test environment.
+	Enabled bool `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
+	// InitializeSchema says when to create the tables if they do not exist: SchemaEmbedded (the
+	// default), SchemaAlways or SchemaNever.
+	InitializeSchema string `json:"initialize-schema" yaml:"initialize-schema" mapstructure:"initialize-schema"`
+	// TablePrefix is the prefix of the names of the tables, EASYSSF_ by default. Letters,
+	// digits, _ and . (for a schema) only.
+	TablePrefix string `json:"table-prefix" yaml:"table-prefix" mapstructure:"table-prefix"`
+	// CleanupInterval is how often expired rows are purged. The stores also purge when they are
+	// written to; zero turns the periodic cleanup off. 15 minutes by default.
+	CleanupInterval Duration `json:"cleanup-interval" yaml:"cleanup-interval" mapstructure:"cleanup-interval"`
+	// AckRetention is how long the store keeps an acknowledgement a polling receiver owes its
+	// transmitter if no poll request manages to deliver it. 7 days by default.
+	AckRetention Duration `json:"ack-retention" yaml:"ack-retention" mapstructure:"ack-retention"`
+	// AckDeleteBatchSize is how many acknowledgements one DELETE of the store removes at once;
+	// databases limit the parameters of a statement. 100 by default.
+	AckDeleteBatchSize int `json:"ack-delete-batch-size" yaml:"ack-delete-batch-size" mapstructure:"ack-delete-batch-size"`
+}
+
+// SchemaInitialization is the configured mode; ok is false for an unknown name.
+func (c *DataConfig) SchemaInitialization() (mode string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(c.InitializeSchema)) {
+	case "", SchemaEmbedded:
+		return SchemaEmbedded, true
+	case SchemaAlways:
+		return SchemaAlways, true
+	case SchemaNever:
+		return SchemaNever, true
+	}
+	return "", false
+}
+
+// ValidTablePrefix reports whether a table prefix consists of letters, digits, '_' and '.' only.
+func ValidTablePrefix(prefix string) bool {
+	for _, c := range prefix {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultTransmitterConfig are the defaults of a transmitter, the ones of the Java starter.
@@ -225,11 +379,14 @@ func DefaultTransmitterConfig() TransmitterConfig {
 // DefaultConfig are the defaults of the receiver.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:           true,
-		TransmitterConfig: DefaultTransmitterConfig(),
-		HTTP:              HTTPConfig{Timeout: D(10 * time.Second)},
-		Dedup:             DedupConfig{Enabled: true, Capacity: 10_000, Retention: D(24 * time.Hour), Lease: D(DefaultDedupLease)},
-		Revocation:        RevocationConfig{Enabled: true, TTL: D(24 * time.Hour)},
+		Enabled:            true,
+		TransmitterConfig:  DefaultTransmitterConfig(),
+		HTTP:               HTTPConfig{Timeout: D(DefaultHTTPTimeout)},
+		Dedup:              DedupConfig{Enabled: true, Capacity: 10_000, Retention: D(7 * 24 * time.Hour), Lease: D(DefaultDedupLease)},
+		Revocation:         RevocationConfig{Enabled: true, TTL: D(24 * time.Hour)},
+		SessionTermination: SessionTerminationConfig{Enabled: true},
+		Data: DataConfig{Enabled: true, InitializeSchema: SchemaEmbedded, TablePrefix: "EASYSSF_", CleanupInterval: D(15 * time.Minute),
+			AckRetention: D(7 * 24 * time.Hour), AckDeleteBatchSize: 100},
 	}
 }
 
@@ -254,6 +411,22 @@ func (c *Config) AllTransmitters() map[string]TransmitterConfig {
 	return all
 }
 
+// TransmitterNames are the names of the configured transmitters, sorted, "default" first.
+func (c *Config) TransmitterNames() []string {
+	all := c.AllTransmitters()
+	names := make([]string, 0, len(all))
+	for name := range all {
+		if name != DefaultTransmitterName {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	if _, ok := all[DefaultTransmitterName]; ok {
+		names = append([]string{DefaultTransmitterName}, names...)
+	}
+	return names
+}
+
 // Validate checks the configuration the way New does when it builds the parts, and returns
 // everything that is wrong at once as a ConfigError.
 func (c *Config) Validate() error {
@@ -263,10 +436,29 @@ func (c *Config) Validate() error {
 	}
 	transmitters := c.AllTransmitters()
 	if len(transmitters) == 0 {
-		failures = append(failures, ConfigurationSection+".transmitter-issuer: The issuer of the SSF transmitter must be configured")
+		failures = append(failures, ConfigurationSection+".transmitter-issuer: The issuer of the SSF transmitter must be configured, or transmitters under "+
+			ConfigurationSection+".transmitters. Set "+ConfigurationSection+".enabled = false to switch the receiver off")
 	}
-	for name, transmitter := range transmitters {
+	if _, named := c.Transmitters[DefaultTransmitterName]; named && strings.TrimSpace(c.TransmitterIssuer) != "" {
+		failures = append(failures, fmt.Sprintf("%[1]s.transmitters.%[2]s: The transmitter named '%[2]s' is the one configured at %[1]s, "+
+			"it cannot be configured under %[1]s.transmitters as well", ConfigurationSection, DefaultTransmitterName))
+	}
+	byIssuer := map[string]string{}
+	for _, name := range c.TransmitterNames() {
+		transmitter := transmitters[name]
+		if strings.TrimSpace(name) == "" {
+			failures = append(failures, fmt.Sprintf("%[1]s.transmitters: A transmitter under %[1]s.transmitters needs a name", ConfigurationSection))
+		}
 		failures = append(failures, transmitter.Validate(name)...)
+		if issuer := strings.TrimSpace(transmitter.TransmitterIssuer); issuer != "" {
+			if other, seen := byIssuer[issuer]; seen {
+				failures = append(failures, fmt.Sprintf("%s.transmitters: The transmitters '%s' and '%s' have the same issuer %s", ConfigurationSection, name, other, issuer))
+			}
+			byIssuer[issuer] = name
+		}
+	}
+	if path := c.Push.EndpointPath; strings.TrimSpace(path) == "" || !strings.HasPrefix(path, "/") {
+		failures = append(failures, fmt.Sprintf("%s.push.endpoint-path: The path of the push endpoint must start with '/' (value: '%s')", ConfigurationSection, path))
 	}
 	for alias, uri := range c.EventAliases {
 		if err := eventtypes.RegisterAlias(alias, uri); err != nil {
@@ -281,6 +473,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Revocation.Enabled && c.Revocation.TTL <= 0 {
 		failures = append(failures, ConfigurationSection+".revocation.ttl: must be positive")
+	}
+	if !ValidTablePrefix(c.Data.TablePrefix) {
+		failures = append(failures, fmt.Sprintf("%s.data.table-prefix: may only consist of letters, digits, '_' and '.' (value: '%s')", ConfigurationSection, c.Data.TablePrefix))
+	}
+	if _, ok := c.Data.SchemaInitialization(); !ok {
+		failures = append(failures, ConfigurationSection+".data.initialize-schema: must be embedded, always or never")
+	}
+	if c.Data.AckRetention <= 0 || c.Data.AckDeleteBatchSize < 1 {
+		failures = append(failures, ConfigurationSection+".data: ack-retention and ack-delete-batch-size must be positive")
 	}
 	if len(failures) > 0 {
 		return &ConfigError{Failures: failures}
@@ -378,6 +579,24 @@ func (t *TransmitterConfig) Validate(name string) []string {
 		failures = append(failures, fmt.Sprintf("%[1]sexpected-audience: The audience of the SETs must be known: set %[1]sexpected-audience, "+
 			"or let the receiver look the stream up (%[1]sstream.management = \"receiver\" or %[1]sstream.id), or set "+
 			"%[1]sset-validation.allow-any-audience = true to accept SETs the transmitter issued for other receivers as well", prefix))
+	}
+	if _, ok := t.OAuth2.AuthenticatesWithRequestBody(); !ok {
+		failures = append(failures, prefix+"oauth2.client-authentication-method: must be client_secret_basic or client_secret_post")
+	}
+	if t.OAuth2.TokenURI != "" {
+		if u, err := url.Parse(t.OAuth2.TokenURI); err != nil || !u.IsAbs() || u.Host == "" {
+			failures = append(failures, prefix+"oauth2.token-uri: must be an absolute URI with a host: "+t.OAuth2.TokenURI)
+		}
+	}
+	if t.Poll.EndpointURL != "" {
+		if u, err := url.Parse(t.Poll.EndpointURL); err != nil || !u.IsAbs() || u.Host == "" {
+			failures = append(failures, prefix+"poll.endpoint-url: must be an absolute URI with a host: "+t.Poll.EndpointURL)
+		}
+	}
+	if t.Push.DeliveryEndpointURL != "" {
+		if u, err := url.Parse(t.Push.DeliveryEndpointURL); err != nil || !u.IsAbs() || u.Host == "" {
+			failures = append(failures, prefix+"push.delivery-endpoint-url: must be an absolute URI with a host: "+t.Push.DeliveryEndpointURL)
+		}
 	}
 	if strings.TrimSpace(t.TransmitterAccessToken) == "" && t.OAuth2.TokenURI != "" &&
 		(strings.TrimSpace(t.OAuth2.ClientID) == "" || strings.TrimSpace(t.OAuth2.ClientSecret) == "") {

@@ -7,10 +7,10 @@ not obvious from the code: what the repository is, how it relates to the Java or
 ## What this is
 
 Go building blocks for the OpenID Shared Signals Framework (SSF 1.0) with CAEP, RISC and SCIM
-Events (RFC 9967): a **receiver** library on `net/http`, database stores on `database/sql` (to
-come), and an in-process test transmitter. The code sits in the authentication path of its
-users, so correctness of verification beats convenience everywhere. Receiver only, no
-transmitter. Apache-2.0. Status: **a sketch**, pre-1.0; the version will follow the Java library
+Events (RFC 9967): a **receiver** library on `net/http`, database stores on `database/sql`, and
+an in-process test transmitter. The code sits in the authentication path of its users, so
+correctness of verification beats convenience everywhere. Receiver only, no transmitter.
+Apache-2.0. Status: pre-1.0, the port is complete; the version follows the Java library
 (`0.7.0-alpha.N`), breaking changes are acceptable when the CHANGELOG says so.
 
 This is a port of [easyssf for Java](https://github.com/easyssf/easyssf), following the playbook
@@ -27,11 +27,12 @@ One Go module, `github.com/easyssf/easyssf-go`. Packages, in dependency order:
 |---|---|---|---|
 | `ssf` | The vocabulary: SETs (`EventToken`), subjects (`Subject`, `SubjectIdentifier`, the builders `IssSub`, `Email`, `Complex`, ...), `DeliveryMethod`, `StreamConfiguration`, `TransmitterMetadata`, over `map[string]any` | `easyssf-core` | stdlib |
 | `ssf/eventtypes` | The event type URIs of SSF, CAEP, RISC and SCIM Events and the alias registry | `easyssf-core::event_types` | stdlib |
-| `ssf/caep`, `ssf/risc`, `ssf/scim` | The typed events per family (`caep` is sketched, `risc` and `scim` are stubs) | `easyssf-core::{caep,risc,scim}` | `ssf` |
-| `receiver` | The receiver: verification, de-duplication, push, poll, stream management, handlers, revocation, session termination, metrics, `Config` and `Receiver` | `easyssf-receiver` incl. `config` and `receiver` | `ssf`, `go-jose/v4` |
-| `ssftest` | `TestTransmitter`: signs SETs, serves metadata and JWK Set, in-process over an `http.RoundTripper` | `easyssf-test` | `ssf`, `go-jose/v4` |
-| `receiver/sqlstore` (to come) | The three tables shared with Java, .NET and Rust, on `database/sql` | `easyssf-receiver-sqlx` | `receiver` |
-| `examples/*` | The port of the Spring Boot examples, not published; `resource-server` exists | `examples/` | `receiver`, `ssftest` |
+| `ssf/caep`, `ssf/risc`, `ssf/scim` | The typed events per family: kinds / operations, common and event-specific claims, the `scim` subject | `easyssf-core::{caep,risc,scim}` | `ssf` |
+| `receiver` | The receiver: verification, de-duplication, push, poll, stream management, typed handlers, revocation, session termination, metrics, `Config`, `Transmitter` and `Receiver` | `easyssf-receiver` incl. `config` and `receiver` | `ssf`, `go-jose/v4` |
+| `ssftest` | `TestTransmitter`: signs SETs, serves metadata and JWK Set, issues tokens, emulates stream management and the poll endpoint, in-process over an `http.RoundTripper` | `easyssf-test` | `ssf`, `go-jose/v4` |
+| `receiver/sqlstore` | The three tables shared with Java, .NET and Rust, on `database/sql`, with the `SQLite`, `PostgreSQL` and `MySQL` dialects | `easyssf-receiver-sqlx` | `receiver` |
+| `conformance` (module `github.com/easyssf/easyssf-go/conformance`, `replace`d to `../`) | The OpenID conformance suite started with testcontainers-go, the receiver under test that plays the scenarios, the four plan tests (`EASYSSF_CONFORMANCE_TESTS=true`) and `cmd/cts` for manual runs | `easyssf-test-conformance`, `easyssf-receiver-spring-boot-conformance-tests` | `receiver`, `ssftest`, testcontainers-go |
+| `examples/*` | The ports of the Spring Boot examples (`resource-server`, `oidc-client`, `scim-provisioning`) and the Keycloak compose setup (`keycloak/`, the same files as in the Java and Rust repositories), in the main module, not published | `examples/` | `receiver`, `ssftest` |
 
 **No package per web framework.** `net/http` is the standard library, so `receiver.PushHandler`
 is an `http.Handler` and `receiver.RevocationMiddleware` is `func(http.Handler) http.Handler`:
@@ -51,15 +52,26 @@ New protocol behaviour goes into `receiver`, new vocabulary into `ssf`, database
 go test -race ./...                      # everything, in-process, no network, no Docker
 go test ./receiver -run TestRejects      # the negative verifier tests
 go vet ./... && gofmt -l .               # CI fails on either
-staticcheck ./...                        # CI runs it; go install honnef.co/go/tools/cmd/staticcheck@latest
+go run honnef.co/go/tools/cmd/staticcheck@latest ./...   # CI runs it
 go run ./examples/resource-server -demo  # pushes one SET to itself through the test transmitter
+EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=postgres://... EASYSSF_MYSQL_URL=user:pw@tcp(host:3306)/db go test ./receiver/sqlstore
+cd conformance && go test ./...            # the scenarios against the test transmitter, no Docker
+cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m -v .   # the suite in Docker, minutes per plan
 ```
 
 - The tests need no network and no Docker: `ssftest.TestTransmitter` answers in-process through
   the `*http.Client` it hands out (`transmitter.Client`), whose transport routes the
-  transmitter's host to its handler and refuses every other host. The sqlstore tests will run
-  on SQLite (`modernc.org/sqlite`, no cgo) and, opted in with `EASYSSF_DATABASE_TESTS=true`, on
-  PostgreSQL and MySQL.
+  transmitter's host to its handler and refuses every other host; `ssftest.ClientFor(a, b)`
+  routes to several. The sqlstore tests run on SQLite (`modernc.org/sqlite`, no cgo, one
+  connection per in-memory database) and, opted in with `EASYSSF_DATABASE_TESTS=true`, on
+  PostgreSQL (pgx) and MySQL (go-sql-driver); those three drivers are test dependencies only.
+- Time-dependent tests use `ssftest.Eventually` and `ssftest.During` with short intervals, and a
+  `Clock` moved by hand where a store measures time.
+- The conformance module is a nested Go module: `go test ./...` from the root does not include
+  it, CI runs its Docker-free tests separately and the `Conformance` workflow runs the plans
+  nightly and on demand. Run the plans only when a change touches stream management, polling,
+  verification or the harness, and say so; the suite images are pinned by digest in
+  `conformance/settings.go`, the same as in the other repositories.
 - `ssftest.SharedKey()` is one 2048 bit RSA key per process: generating one takes long enough that
   the tests would crawl otherwise. `ssftest.GenerateKey` always makes a fresh key, for SETs the
   receiver must reject.
@@ -80,8 +92,8 @@ go run ./examples/resource-server -demo  # pushes one SET to itself through the 
   `receiver.PushHandler`. `ssf.SsfSubject` would stutter, which Go style forbids, and
   `receiver.Verifier` greps as well as `SsfSetVerifier` once you know the rule. Type names
   otherwise follow Java: `JTIDedupStore`, `TokenRevocationStore`, `MetadataResolver`.
-- `schema.sql` and `migration/*.sql` of `receiver/sqlstore` will be copies of the Java files,
-  byte for byte; CI compares them. Change them in the Java repository first.
+- `schema.sql` and `migration/*.sql` of `receiver/sqlstore` are copies of the Java files, byte
+  for byte; CI compares them. Change them in the Java repository first.
 
 ## Code conventions
 
@@ -117,8 +129,17 @@ go run ./examples/resource-server -demo  # pushes one SET to itself through the 
   `context.WithoutCancel(r.Context())`; a panic in a handler is recovered by the processor,
   counted as a failed handler and becomes a 500, and the dedup store releases the claim.
 - **Background work runs in goroutines bound to a context**: `Start(ctx)` returns at once,
-  `Stop(ctx)` cancels and waits. Stores take a `Clock` (`func() time.Time`) the tests move by
-  hand; no `time.Sleep` in tests of time-dependent behaviour.
+  `Stop(ctx)` cancels and waits (`StreamRegistrar`, `Poller`, `Transmitter`, `Receiver`,
+  `sqlstore.Cleanup`). Stores take a `Clock` (`func() time.Time`) the tests move by hand; no
+  `time.Sleep` in tests of time-dependent behaviour.
+- **Calls to the transmitter go through `exchange`/`send` in `transmitter.go`**: a per-call
+  timeout from the context (`DefaultHTTPTimeout`, `easyssf.receiver.http.timeout`; a long poll
+  gets its hold plus `LongPollMargin`), the bearer token of the `TokenProvider`, and one retry
+  with a new token after a 401 when the provider implements `TokenInvalidator`. The default
+  client has no `Timeout` of its own, so that a long poll can outlast the other calls.
+- **`Transmitter` is a plain struct with exported fields** that `Receiver.New` fills from the
+  configuration and `WithTransmitterCustomizer` may replace; the Rust builder and the .NET
+  factory in one. `Receiver` keeps them in configuration order, `default` first.
 - **Logging** is `log/slog` with attributes (`jti`, `transmitter`, `event` as alias); a nil logger
   means discard. Metrics are the `Metrics` interface under the Java names, `NoopMetrics` by
   default; an OpenTelemetry implementation is a separate package or module.
@@ -134,34 +155,25 @@ go run ./examples/resource-server -demo  # pushes one SET to itself through the 
 - Every exported identifier has a doc comment that starts with its name; `go vet`, `gofmt` and
   `staticcheck` are clean. No cgo.
 
-## What the sketch has and what is left
+## Where things are
 
-Done and tested: `ssf` (token, subjects, delivery, stream, metadata), `ssf/eventtypes`,
-`receiver` verification (`JWTVerifier`, `HTTPJWKSetSource` with cache and rate-limited refresh,
-`IssuerRoutingVerifier`, `MetadataResolver` with `URIPolicy` and the two well-known locations),
-`InMemoryJTIDedupStore` with lease and renewal, `Processor` with claim renewal, critical subject
-members and panic recovery, `PushHandler` as `http.Handler` and by issuer, `Context`/`Handler`/
-`ForEvent`, `TokenRevocationStore` with the in-memory store, handler and middleware,
-`SessionTerminator` and its handler, `Config` with defaults and validation, `Receiver` assembly
-from configuration, `ssftest.TestTransmitter` for metadata, JWK Set and signing.
+The Java test classes and their Go files, so that the four suites can be compared:
 
-Left, each marked `SKETCH` in the code, in the order that unblocks the most:
+| Java tests | Go file |
+|---|---|
+| `NimbusSsfSetVerifierTests`, `SsfTransmitterMetadataResolverTests` | `receiver/set_test.go`, `receiver/transmitter_test.go` |
+| `InMemorySsfJtiDedupStoreTests`, `SsfSetProcessorTests`, `SsfPushHandlerTests` | `receiver/dedup_test.go`, `receiver/processor_test.go`, `receiver/push_test.go` |
+| `SsfStreamManagementTests`, `SsfStreamVerificationTests` | `receiver/stream_test.go` |
+| `SsfPollerTests`, `SsfPollerRateLimitTests` | `receiver/poll_test.go` |
+| `SsfTransmittersTests`, the hosting tests of .NET | `receiver/transmitter_test.go`, `receiver/receiver_test.go` |
+| `SsfSessionTerminationEventHandlerTests`, `SsfSubjectClaimsMatcherTests` | `receiver/session_test.go` |
+| `SsfCaepEventHandlerTests`, `SsfRiscEventHandlerTests`, `SsfScimEventHandlerTests` | `receiver/typed_handlers_test.go`, `ssf/{caep,risc,scim}/*_test.go` |
+| `AbstractJdbcSsfStoresTests`, `AbstractJdbcSharedReceiversTests` | `receiver/sqlstore/stores_test.go`, `receiver/sqlstore/shared_receivers_test.go` |
+| `ConformanceSuiteModulesTests`, `ConformanceRunLocalTransmitterTests`, the four plan tests | `conformance/modules_test.go`, `conformance/run_test.go`, `conformance/plans_test.go` |
 
-1. `receiver/stream.go`: `StreamClient` bodies, `StreamRegistrar` (reuse/update/create with
-   retries, audience and poll endpoint from the registered stream, delete on shutdown),
-   `StreamVerification` with `InvalidState`. Tests: `stream_management.rs`, `stream_verification.rs`.
-2. `receiver/poll.go`: `Poller.PollOnce` and the loop (RFC 8936 request body with `maxEvents`,
-   `returnImmediately`, `ack`, `setErrs`; `Retry-After`; long polling with a longer timeout),
-   `ClientCredentialsTokenProvider` in `transmitter.go`. Tests: `poller.rs`, `transmitters.rs`.
-3. `ssftest`: the token, stream management, poll and verification endpoints of the transmitter,
-   `QueueSet`, `AcknowledgedSets`, `ReportedErrors`, `Streams`.
-4. `receiver.go`: build registrar and poller per transmitter, `Health` from their states, the
-   per-transmitter `ExpectedAuthHeader` already routes.
-5. `ssf/caep` accessors, `ssf/risc`, `ssf/scim`; the typed handler interfaces
-   (`CaepHandler`, `RiscHandler`, `ScimHandler`) and their adapters in `receiver`.
-6. `receiver/sqlstore`: the three stores over `database/sql` with the Java schema and migrations,
-   `?` placeholders rewritten for PostgreSQL, the cleanup goroutine.
-7. The remaining examples (OIDC client, SCIM provisioning) and the Keycloak compose pointer.
+Not included, on purpose, as in the other ports: a transmitter, an OpenTelemetry `Metrics`
+implementation (a separate module when it comes), session integrations for gorilla/sessions or
+scs (`examples/oidc-client/sessions.go` shows the few lines they need).
 
 ## Documentation that changes with the code
 

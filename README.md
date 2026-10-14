@@ -3,8 +3,8 @@
 Building blocks for the
 [OpenID Shared Signals Framework (SSF)](https://openid.net/specs/openid-sharedsignals-framework-1_0.html)
 in Go, for applications that receive security events: a **receiver** library on `net/http` that
-mounts on any Go web framework, an in-process **test transmitter**, and (to come) database stores
-on `database/sql`. A port of [easyssf for Java](https://github.com/easyssf/easyssf), following the
+mounts on any Go web framework, an in-process **test transmitter**, and database stores on
+`database/sql`. A port of [easyssf for Java](https://github.com/easyssf/easyssf), following the
 layout of [easyssf-dotnet](https://github.com/easyssf/easyssf-dotnet) and
 [easyssf-rust](https://github.com/easyssf/easyssf-rust); the four share their test suites, their
 database tables and their configuration keys.
@@ -27,9 +27,9 @@ mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 
 | | |
 |---|---|
-| **Status** | **Sketch**, pre-1.0; the version will follow the Java library (`0.7.0-alpha.N`). See [What is left](#what-is-left). |
+| **Status** | Pre-1.0; the version follows the Java library (`0.7.0-alpha.N`), breaking changes are acceptable when the CHANGELOG says so |
 | **Go** | 1.24 or later, no cgo |
-| **Dependencies** | `github.com/go-jose/go-jose/v4` for JWS and JWK; everything else is the standard library |
+| **Dependencies** | `github.com/go-jose/go-jose/v4` for JWS and JWK; `modernc.org/sqlite`, `pgx` and `go-sql-driver/mysql` only for the tests of `receiver/sqlstore`; everything else is the standard library |
 | **License** | Apache-2.0 |
 
 ## Packages
@@ -38,8 +38,9 @@ mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 |---|---|
 | `ssf` | The vocabulary: SETs, subjects, delivery methods, stream configuration, transmitter metadata; `ssf/eventtypes` the event type URIs with aliases; `ssf/caep`, `ssf/risc`, `ssf/scim` the typed events |
 | `receiver` | The receiver: verification, de-duplication with a lease, push and poll, stream management, typed handlers, token revocation, session termination, metrics; `Config` and `Receiver`, which assembles a receiver from it; `PushHandler` (an `http.Handler`) and `RevocationMiddleware` |
-| `ssftest` | `TestTransmitter`: signs SETs, serves metadata and the JWK Set, in-process through an `*http.Client` it hands out, no socket involved |
-| `receiver/sqlstore` | *(to come)* The three tables shared with Java, .NET and Rust, on `database/sql` |
+| `receiver/sqlstore` | The three tables shared with Java, .NET and Rust, on `database/sql`: SQLite, PostgreSQL and MySQL |
+| `ssftest` | `TestTransmitter`: signs SETs, serves metadata and the JWK Set, issues tokens, emulates stream management and the poll endpoint, in-process through an `*http.Client` it hands out, no socket involved |
+| `conformance` (own module) | Runs the OpenID conformance suite's SSF receiver test plans against the receiver, with the suite started by testcontainers-go, see [Conformance](#conformance) |
 
 There is no package per web framework: `PushHandler` is an `http.Handler`, so it mounts on
 `net/http`, chi and gorilla/mux as it is, and on gin and echo through `gin.WrapH` and
@@ -60,24 +61,37 @@ sends the status and body it returns (see [Any framework](#any-framework)).
 - Resolves **subjects** (RFC 9493): every simple format, complex subjects, aliases, the `scim`
   format, and the conventions of early SSF drafts and of Keycloak behind explicit modes.
 - Knows the **event types** of SSF, CAEP, RISC and SCIM Events (RFC 9967) by URI and by alias
-  (`CaepSessionRevoked`), and lets you register aliases for vendor specific types.
+  (`CaepSessionRevoked`), and lets you register aliases for vendor specific types. The **typed
+  handlers** `CaepHandler`, `RiscHandler` and `ScimHandler` dispatch by kind with typed access
+  to the payload (`event.CredentialType()`, `event.Reason()`, `event.Data()`).
 - **Receives pushed SETs** (RFC 8935): checks the transmitter's `Authorization` header in constant
   time, verifies, **skips SETs it has already processed** (`jti` de-duplication with a lease and
   claim renewal, so a SET another instance is handling is left alone and one abandoned by a crash
   is taken over), hands verified events to the handlers, answers `202`, `400` with an error
   document, `401`, `413`, `500` or `503`. The handlers run detached from the request context and a
   panic in one is a failed handler, so a transmitter that disconnects does not cancel them.
+- **Polls for SETs** (RFC 8936): short or long polling, acknowledgements and error reports ride on
+  the next request and wait in a `PollAckStore` until it succeeded, invalid SETs are reported with
+  their error code, `Retry-After` and `429` are honoured, the acknowledgements owed are flushed on
+  shutdown.
 - **Discovers the transmitter** from its `.well-known/ssf-configuration`, at the SSF location and
   at the one OpenID providers tend to use, and holds its issuer and endpoints to `https` unless a
   loopback address or `allow-insecure-http` says otherwise.
-- **Revokes access tokens**: `session-revoked` events fill a `TokenRevocationStore`;
+- **Manages its stream** (SSF 1.0, section 8.1): looks a stream up by id, or reuses, updates or
+  creates the stream it wants, in the background with retries, learns the audience of the SETs
+  and the poll endpoint from it, refuses a stream the transmitter created with another issuer,
+  validates **verification events** by stream and state, and deletes the stream on shutdown when
+  asked. The management and poll endpoints are called with a fixed token or one obtained with the
+  **client credentials grant**, renewed ahead of its expiry and after a `401`.
+- **Revokes access tokens and sessions**: `session-revoked` events fill a `TokenRevocationStore`;
   `RevocationMiddleware` rejects tokens with that `sid` or that `sub` issued up to the event. A
-  `SessionTerminator` ends server-side sessions as the event arrives.
+  `SessionTerminator` ends server-side sessions as the event arrives; `SubjectMatches` tells which
+  sessions belong to the subject of an event, `scim` subjects included.
+- **Shares its state between instances** with `receiver/sqlstore`: processed SETs, revocations
+  and the acknowledgements owed in the tables of the Java library, so that a SET pushed to one
+  instance is handled once and acknowledged by whichever instance polls next.
 - Records **metrics** through the `Metrics` interface under the Java names and reports its
-  **health**.
-- *Sketched, not finished:* **stream management** (`StreamClient`, `StreamRegistrar`) and
-  **polling** (RFC 8936, `Poller`, `PollAckStore`), the typed CAEP/RISC/SCIM handlers, the
-  database stores. The types and their documentation are in place; see [What is left](#what-is-left).
+  **health** per transmitter: metadata resolved, stream registered, last poll.
 
 ## Getting started
 
@@ -117,6 +131,7 @@ revoked := receiver.RevocationMiddleware(rcv.TokenRevocationStore(), func(r *htt
     return receiver.TokenClaims{Issuer: claims.Iss, Subject: claims.Sub, SessionID: claims.Sid, IssuedAt: claims.Iat}, ok
 })
 mux.Handle("GET /api/orders", revoked(orders))
+mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(rcv.Health(r.Context())) })
 ```
 
 To poll instead of being pushed to, and to let the receiver register its own stream:
@@ -137,15 +152,18 @@ easyssf:
       client-secret: "..."
 ```
 
-The audience of the stream is learned from the registration, so `expected-audience` is not needed.
-Several transmitters go under `easyssf.receiver.transmitters.<name>`, each with the same settings;
-the one at `easyssf.receiver` is named `default`. `receiver.WithTransmitterCustomizer` replaces
-parts of any transmitter before it is built.
+The audience of the stream is learned from the registration, so `expected-audience` is not needed;
+until the stream is registered, SETs are left for redelivery (`503`). Several transmitters go under
+`easyssf.receiver.transmitters.<name>`, each with the same settings; the one at `easyssf.receiver`
+is named `default`, and the push endpoint authenticates each by its own header.
+`receiver.WithTransmitterCustomizer` replaces parts of any transmitter before it is assembled.
 
 Every setting, with its default, is documented on `receiver.Config` and its sub-structs
 (`go doc ./receiver Config`); the keys are those of the
 [.NET configuration table](https://github.com/easyssf/easyssf-dotnet#configuration) in
-kebab-case, with durations as strings such as `"30s"` or `"24h"`.
+kebab-case, with durations as strings such as `"30s"` or `"24h"`. The HTTP timeout of
+`easyssf.receiver.http.timeout` applies per call, so that a long poll can wait longer; the default
+client has no `Timeout` of its own, and one given with `WithHTTPClient` caps every call.
 
 ### chi, gorilla/mux, gin, echo
 
@@ -172,53 +190,135 @@ response := rcv.PushHandler().Handle(context.WithoutCancel(reqCtx), authorizatio
 
 Assembling the parts by hand reads like the plain Java section of the Java README: a `Verifier`
 over a `JWKSetSource`, a `Processor` with a `JTIDedupStore` and handlers, a `PushHandler` over
-the processor; see `receiver/processor_test.go`.
+the processor, a `StreamClient` with a `StreamRegistrar`, a `Poller`; see
+`receiver/processor_test.go`, `receiver/stream_test.go` and `receiver/poll_test.go`.
+
+### Typed handlers
+
+```go
+type stepUp struct{ receiver.NoopCaepHandler }
+
+func (stepUp) OnAssuranceLevelChange(ctx context.Context, event *caep.Event, context *receiver.Context) error {
+    if event.ChangeDirection() == "decrease" {
+        // require a step-up for context.Subject().Sub() to event.CurrentLevel()
+    }
+    return nil
+}
+
+rcv, err := receiver.New(config, receiver.WithHandler(receiver.Caep(stepUp{})))
+```
+
+`receiver.Risc` and `receiver.Scim` do the same for RISC 1.0 and SCIM Events; a handler that also
+implements `OnCaepEvent` (`OnRiscEvent`, `OnScimEvent`) sees every event of its family first and
+dispatches with `receiver.DispatchCaepEvent` when it wants to.
+
+### Ending sessions
+
+An application whose sessions are not access tokens (an OIDC client with a session cookie) gives
+the receiver a `SessionTerminator` over its session store; `receiver.SubjectMatches` compares the
+subject of an event with the claims of the ID token a user logged in with:
+
+```go
+func (s *sessions) TerminateSessions(ctx context.Context, subject *ssf.Subject) (int, error) {
+    ended := 0
+    for id, session := range s.all() {
+        if receiver.SubjectMatches(subject, session.IDTokenClaims, session.Username) {
+            s.end(id)
+            ended++
+        }
+    }
+    return ended, nil
+}
+
+rcv, err := receiver.New(config, receiver.WithSessionTerminator(sessions))
+```
+
+`easyssf.receiver.session-termination` says which events end which sessions (`CaepSessionRevoked`
+ends the session named, `CaepCredentialChange` all sessions of the user) and how a `scim` subject
+is matched (`externalId` and `id` with `sub`, `userName` with `preferred_username` by default).
 
 ### Sharing state between instances
 
-A SET is pushed to one instance of an application. The in-memory stores are lost on restart and
-not shared; `receiver/sqlstore` *(to come)* keeps the processed SETs, the revocations and the
-acknowledgements a poller owes in the database of the application, in the tables of the Java
-library (`EASYSSF_PROCESSED_SET`, `EASYSSF_REVOCATION`, `EASYSSF_POLL_ACK`). Until then, or on
-another store, implement `JTIDedupStore`, `TokenRevocationStore` and `PollAckStore` and give them
-to `receiver.New` with `WithDedupStore`, `WithTokenRevocationStore` and `WithPollAckStore`.
+A SET is pushed to one instance of an application. `receiver/sqlstore` keeps the processed SETs,
+the revocations and the acknowledgements a poller owes in the database of the application, in the
+tables of the Java library (`EASYSSF_PROCESSED_SET`, `EASYSSF_REVOCATION`, `EASYSSF_POLL_ACK`):
+
+```go
+db, err := sql.Open("pgx", databaseURL)
+stores := sqlstore.NewStores(sqlstore.NewOperations(db, sqlstore.PostgreSQL), config)
+if err := stores.PrepareTables(ctx); err != nil { ... }   // checks or creates the tables, per easyssf.receiver.data
+cleanup := stores.Cleanup()                               // purges expired rows every data.cleanup-interval
+cleanup.Start(ctx)
+rcv, err := receiver.New(config, append(stores.Options(), receiver.WithHandler(...))...)
+```
+
+`sqlstore.SQLite` (modernc.org/sqlite, no cgo), `sqlstore.PostgreSQL` (pgx) and `sqlstore.MySQL`
+(go-sql-driver) are the known dialects, `sqlstore.DialectFor(driverName)` picks one; the statements
+are plain SQL with `?` placeholders, rewritten to `$n` for PostgreSQL. `schema.sql` and
+`migration/*.sql` of the package are the files of the Java library byte for byte, for Flyway or
+Liquibase; `initialize-schema: always` lets the stores create and upgrade the tables themselves.
+On another store, implement `JTIDedupStore`, `TokenRevocationStore` and `PollAckStore` and give
+them to `receiver.New` with `WithDedupStore`, `WithTokenRevocationStore` and `WithPollAckStore`.
 
 ## Testing your receiver
 
-`ssftest.TestTransmitter` signs SETs, serves its metadata and JWK Set and (to come) hands out
-access tokens and emulates the stream management and poll endpoints, all in-process through the
-`*http.Client` it hands out: give it to the receiver as its HTTP client, no socket is involved.
+`ssftest.TestTransmitter` signs SETs, serves its metadata and JWK Set, hands out access tokens and
+emulates the stream management and poll endpoints, all in-process through the `*http.Client` it
+hands out: give it to the receiver as its HTTP client, no socket is involved.
 
 ```go
 transmitter := ssftest.New()
 rcv, err := receiver.New(configFor(transmitter.Issuer()), receiver.WithHTTPClient(transmitter.Client))
 set := transmitter.Set("CaepSessionRevoked", ssf.Complex(ssf.IssSub(transmitter.Issuer(), "alice"), ssf.Opaque("session-1")))
-// POST set to /ssf/push, or transmitter.QueueSet(set) for a polling receiver (to come)
+// POST set to /ssf/push, or transmitter.QueueSet(set) for a polling receiver
+ssftest.Eventually(t, 5*time.Second, "the acknowledgement", func() bool { return len(transmitter.AcknowledgedSets()) == 1 })
 ```
 
-`transmitter.SetAvailable(false)` simulates an outage, `ssftest.GenerateKey(1024, "weak")` makes
+`transmitter.SetAvailable(false)` simulates an outage, `transmitter.ExpireAccessTokens()` a
+rejected token, `transmitter.SetLongPollHold(d)` a transmitter that holds long polls,
+`ssftest.ClientFor(a, b)` routes to several transmitters, `ssftest.GenerateKey(1024, "weak")` makes
 keys a receiver has to reject, `ssftest.Sign` and `ssftest.SignWith` sign claims with any key and
 algorithm, `ssftest.Unsigned` makes an `alg: none` token.
 
 ## Examples
 
-[`examples/resource-server`](examples/resource-server) is the port of the Spring Boot resource
-server: it receives events over push, logs them and rejects access tokens of revoked sessions.
-`go run ./examples/resource-server -demo` runs it against the in-process test transmitter and
-pushes one SET to itself; with `SSF_TRANSMITTER_ISSUER` and friends it runs against the Keycloak
-compose setup of the Java repository.
+[`examples/`](examples) holds the ports of the Spring Boot examples: a resource server that rejects
+the access tokens of revoked sessions (`go run ./examples/resource-server -demo` runs it against
+the in-process test transmitter, `-poll` polls instead), an OIDC client that ends local sessions
+when Keycloak reports a revoked session or changed credentials, and a SCIM provisioning
+application that mirrors SCIM `Users` from SCIM Events, with a demo service provider of its own.
+The two Keycloak applications run against [`examples/keycloak`](examples/keycloak), the Docker
+Compose setup with the `ssf-demo` realm shared with the Java and Rust repositories.
 
-## What is left
+## Conformance
 
-This repository is a sketch to extend. The vertical slice push → verify → dedup → handlers →
-revocation is complete and tested against the Java test suite; what remains is listed in
-[`AGENTS.md`](AGENTS.md#what-the-sketch-has-and-what-is-left), each item marked `SKETCH` in the
-code with the Rust file to port it from.
+The receiver is tested against the OpenID conformance suite's SSF and CAEP receiver test plans,
+with push and poll delivery. [`conformance/`](conformance) is a module of its own: the receiver
+under test that plays the stream operations a test module expects, the suite started in Docker by
+testcontainers-go, and the four plan tests. They are skipped unless asked for, as a plan takes
+minutes:
+
+```sh
+cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m -v .
+```
+
+See [`conformance/README.md`](conformance/README.md) for the plans, the suite image
+(`release-v5.3.2`, pinned by digest, the same as in the Java, .NET and Rust repositories) and
+manual runs against a suite of your own.
+
+## Not included (yet)
+
+- A transmitter: this is a receiver library. `ssftest.TestTransmitter` is for tests.
+- An OpenTelemetry or Prometheus implementation of `Metrics`; it is a small interface, implement
+  it over your meter.
+- Session integrations for gorilla/sessions or scs; `SessionTerminator` and `SubjectMatches` are
+  what one needs, see `examples/oidc-client/sessions.go`.
 
 ## Build
 
 ```sh
-go test -race ./...                      # everything, in-process, no network, no Docker
-go vet ./... && gofmt -l . && staticcheck ./...
+go test -race ./...                                   # everything, in-process, no network, no Docker
+EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=... EASYSSF_MYSQL_URL=... go test ./receiver/sqlstore
+go vet ./... && gofmt -l . && go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 go run ./examples/resource-server -demo
 ```

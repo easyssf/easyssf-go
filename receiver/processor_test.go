@@ -204,7 +204,7 @@ func TestReceiverAssemblesFromConfiguration(t *testing.T) {
 	if !revoked(t, rcv.TokenRevocationStore(), receiver.TokenClaims{Issuer: idp, Subject: "alice", SessionID: "s1"}) {
 		t.Fatal("the built-in revocation handler ran")
 	}
-	if rcv.PushEndpointPath() != "/ssf/push" || rcv.Health() != receiver.HealthUp {
+	if rcv.PushEndpointPath() != "/ssf/push" || rcv.Health(ctx).Status != receiver.HealthHealthy {
 		t.Fatal("defaults")
 	}
 }

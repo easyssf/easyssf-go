@@ -18,6 +18,8 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./...
+      # the conformance module, without the plans (they need Docker and minutes, see conformance.yml)
+      - run: cd conformance && go vet ./... && go test -race ./...
 
   lint:
     name: staticcheck
@@ -27,9 +29,50 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go install honnef.co/go/tools/cmd/staticcheck@latest
-      - run: staticcheck ./...
+      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+      - run: cd conformance && go run honnef.co/go/tools/cmd/staticcheck@latest ./...
 
-  # schema:
-  #   The SQL files of receiver/sqlstore ship byte for byte with the Java library; compare them
-  #   once that package exists, as the Rust workflow does.
+  database:
+    name: Stores on PostgreSQL and MySQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: easyssf
+          POSTGRES_PASSWORD: easyssf
+          POSTGRES_DB: easyssf
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_USER: easyssf
+          MYSQL_PASSWORD: easyssf
+          MYSQL_DATABASE: easyssf
+          MYSQL_ROOT_PASSWORD: root
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./receiver/sqlstore
+        env:
+          EASYSSF_DATABASE_TESTS: "true"
+          EASYSSF_POSTGRES_URL: postgres://easyssf:easyssf@127.0.0.1:5432/easyssf
+          EASYSSF_MYSQL_URL: easyssf:easyssf@tcp(127.0.0.1:3306)/easyssf
+
+  schema:
+    name: Shared SQL files match the Java library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: easyssf/easyssf
+          path: java
+      - run: |
+          diff java/easyssf-receiver-jdbc/src/main/resources/org/easyssf/receiver/jdbc/schema.sql receiver/sqlstore/schema.sql
+          diff -r java/easyssf-receiver-jdbc/src/main/resources/org/easyssf/receiver/jdbc/migration receiver/sqlstore/migration
