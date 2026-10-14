@@ -36,7 +36,7 @@ mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 
 | Package | Holds |
 |---|---|
-| `ssf` | The vocabulary: SETs, subjects, delivery methods, stream configuration, transmitter metadata; `ssf/eventtypes` the event type URIs with aliases; `ssf/caep`, `ssf/risc`, `ssf/scim` the typed events |
+| `ssf` | The vocabulary: SETs, subjects, delivery methods, stream configuration, transmitter metadata, the SET builder; `ssf/eventtypes` the event type URIs with aliases; `ssf/caep`, `ssf/risc`, `ssf/scim` the typed events; `ssf/signing` signs SETs |
 | `receiver` | The receiver: verification, de-duplication with a lease, push and poll, stream management, typed handlers, token revocation, session termination, metrics; `Config` and `Receiver`, which assembles a receiver from it; `PushHandler` (an `http.Handler`) and `RevocationMiddleware` |
 | `receiver/sqlstore` | The three tables shared with Java, .NET and Rust, on `database/sql`: SQLite, PostgreSQL and MySQL |
 | `ssftest` | `TestTransmitter`: signs SETs, serves metadata and the JWK Set, issues tokens, emulates stream management and the poll endpoint, in-process through an `*http.Client` it hands out, no socket involved |
@@ -165,6 +165,21 @@ kebab-case, with durations as strings such as `"30s"` or `"24h"`. The HTTP timeo
 `easyssf.receiver.http.timeout` applies per call, so that a long poll can wait longer; the default
 client has no `Timeout` of its own, and one given with `WithHTTPClient` caps every call.
 
+A management, metadata or JWK Set call that fails with a connection error or a `408`, `429`,
+`500`, `502`, `503` or `504` is tried again, twice by default, after a quarter of a second
+doubling up to five seconds or the `Retry-After` the transmitter sends
+(`easyssf.receiver.http.retry.max-retries`, `initial-backoff`, `max-backoff`; `max-retries: 0`
+turns it off). Poll requests are not retried: the poller has its interval and pauses on
+`Retry-After`. The stream registrar keeps retrying a failed registration regardless.
+
+Every call to a transmitter goes through a `receiver.Authorizer`: the bearer token of its
+`TokenProvider`, and the headers of `easyssf.receiver.headers` (an API key, a tenant), which are
+sent with every call including those for metadata and keys. For headers on particular endpoints
+only, or anything else a transmitter wants, compose `receiver.StaticHeaders`,
+`receiver.EndpointHeaders` and your own `receiver.AuthorizerFunc` (the endpoint a request is for
+is `receiver.EndpointOf(ctx)`) with `receiver.Authorizers` and give the result to
+`receiver.NewStreamClient` and `receiver.NewPoller` in a `WithTransmitterCustomizer`.
+
 ### chi, gorilla/mux, gin, echo
 
 ```go
@@ -280,6 +295,18 @@ rejected token, `transmitter.SetLongPollHold(d)` a transmitter that holds long p
 keys a receiver has to reject, `ssftest.Sign` and `ssftest.SignWith` sign claims with any key and
 algorithm, `ssftest.Unsigned` makes an `alg: none` token.
 
+A SET of your own is built with `ssf.NewSET` and signed with `ssf/signing`, which the test
+transmitter uses too (`transmitter.Signer()`):
+
+```go
+claims, err := ssf.NewSET(issuer).Audience("https://app.example").
+	Subject(ssf.Complex(ssf.IssSub(issuer, "alice"), ssf.Opaque("session-1"))).
+	Event("CaepSessionRevoked", caep.NewPayload().EventTimestamp(time.Now()).InitiatingEntity("admin").Build()).
+	Claims()
+signer, err := signing.NewSigner(privateKey, jose.RS256, "key-1") // RSA, ECDSA or Ed25519
+set, err := signer.Sign(claims)                                   // typ secevent+jwt, kid key-1
+```
+
 ## Examples
 
 [`examples/`](examples) holds the ports of the Spring Boot examples: a resource server that rejects
@@ -308,7 +335,8 @@ manual runs against a suite of your own.
 
 ## Not included (yet)
 
-- A transmitter: this is a receiver library. `ssftest.TestTransmitter` is for tests.
+- A transmitter: this is a receiver library. `ssf.NewSET` and `ssf/signing` make and sign SETs
+  for tests and small senders; the stream management and delivery of a transmitter are not here.
 - An OpenTelemetry or Prometheus implementation of `Metrics`; it is a small interface, implement
   it over your meter.
 - Session integrations for gorilla/sessions or scs; `SessionTerminator` and `SubjectMatches` are

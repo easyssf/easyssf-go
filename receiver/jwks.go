@@ -47,6 +47,10 @@ type HTTPJWKSetSource struct {
 	Clock Clock
 	// Timeout is how long a fetch waits for the response; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// Authorizer adds what the fetch needs, for example an API key; nothing if nil.
+	Authorizer Authorizer
+	// Retry says how a failed fetch is tried again; not at all if zero.
+	Retry RetryOptions
 
 	client  *http.Client
 	fixed   *url.URL
@@ -99,7 +103,7 @@ func (s *HTTPJWKSetSource) JWKSet(ctx context.Context, refresh bool) (*jose.JSON
 			s.url = u
 		}
 	}
-	body, err := getJSON(ctx, s.client, s.Timeout, s.url, "application/jwk-set+json, application/json")
+	body, err := getJSON(WithEndpoint(ctx, EndpointJWKS), s.client, s.Authorizer, s.Retry, s.Timeout, s.url, "application/jwk-set+json, application/json")
 	if err != nil {
 		return nil, Unavailable(err, "could not retrieve the keys to verify the SET from %s", s.url)
 	}

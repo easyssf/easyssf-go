@@ -53,6 +53,18 @@ All notable changes to this project will be documented in this file. The format 
   schema check and creation with the upgrades of older releases, `Cleanup`, and `Stores` built
   from `easyssf.receiver.data`; `schema.sql` and `migration/*.sql` are the files of the Java
   library byte for byte.
+- `receiver`: `Authorizer`, what every call to the transmitter goes through: `BearerToken` over
+  a `TokenProvider`, `StaticHeaders`, `EndpointHeaders` by `Endpoint` (`EndpointOf(ctx)`),
+  `AuthorizerFunc` and `Authorizers` to chain them; `NewStreamClient` and `NewPoller` take one
+  (every `TokenProvider` of the library is one); `MetadataResolver` and `HTTPJWKSetSource`
+  accept one too; `easyssf.receiver.headers` sends fixed headers with every call.
+- `receiver`: `RetryOptions` and `easyssf.receiver.http.retry`: management, metadata and JWK
+  Set calls that fail with a connection error or 408, 429, 500, 502, 503 or 504 are tried
+  again with exponential backoff, honouring `Retry-After`; two retries by default.
+- `ssf`: `NewSET`, a builder for the claims of a SET (`JTI`, `IssuedAt`, `Audience`, `Subject`,
+  `Txn`, `Event` resolving aliases, `Claim`), `NewJTI`; `ssf/signing` with `Signer` over RSA,
+  ECDSA and Ed25519 keys, `Sign` (typ `secevent+jwt`), `SignTyped`, `PublicJWK` and `JWKSet`;
+  `caep.NewPayload` for the common claims of a CAEP event; `TestTransmitter.Signer`.
 - `ssftest`: `TestTransmitter` with the signing key, the JWK Set, the metadata at both
   locations, the token endpoint, the stream management, status, subject and verification
   endpoints and the poll endpoint with long polling, `QueueSet`, `AcknowledgedSets`,

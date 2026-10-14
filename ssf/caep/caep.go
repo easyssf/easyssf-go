@@ -277,3 +277,66 @@ func Localized(value any) map[string]string {
 	encoded, _ := json.Marshal(value)
 	return map[string]string{"": string(encoded)}
 }
+
+// Payload assembles the payload of a CAEP event for a transmitter or a test: the common claims
+// of CAEP 1.0, section 2, and any event-specific ones.
+//
+//	payload := caep.NewPayload().EventTimestamp(time.Now()).InitiatingEntity("admin").
+//		ReasonAdmin("en", "Policy violation").Build()
+type Payload struct{ claims ssf.Claims }
+
+// NewPayload starts an empty payload.
+func NewPayload() *Payload { return &Payload{claims: ssf.Claims{}} }
+
+// EventTimestamp sets event_timestamp, in seconds since the epoch.
+func (p *Payload) EventTimestamp(at time.Time) *Payload {
+	p.claims["event_timestamp"] = at.Unix()
+	return p
+}
+
+// InitiatingEntity sets initiating_entity: admin, user, policy or system.
+func (p *Payload) InitiatingEntity(entity string) *Payload {
+	p.claims["initiating_entity"] = entity
+	return p
+}
+
+// ReasonAdmin adds a reason_admin in the language, a BCP 47 tag such as "en".
+func (p *Payload) ReasonAdmin(language, reason string) *Payload {
+	return p.localized("reason_admin", language, reason)
+}
+
+// ReasonUser adds a reason_user in the language.
+func (p *Payload) ReasonUser(language, reason string) *Payload {
+	return p.localized("reason_user", language, reason)
+}
+
+// localized keeps the reasons as the map[string]any of a decoded payload, so that Localized
+// reads them back whether the payload was built or received.
+func (p *Payload) localized(name, language, text string) *Payload {
+	reasons, _ := p.claims[name].(map[string]any)
+	if reasons == nil {
+		reasons = map[string]any{}
+		p.claims[name] = reasons
+	}
+	reasons[language] = text
+	return p
+}
+
+// Claim sets an event-specific claim such as credential_type or current_level; nil removes it.
+func (p *Payload) Claim(name string, value any) *Payload {
+	if value == nil {
+		delete(p.claims, name)
+	} else {
+		p.claims[name] = value
+	}
+	return p
+}
+
+// Build is the payload, to pass to ssf.SETBuilder.Event.
+func (p *Payload) Build() ssf.Claims {
+	claims := make(ssf.Claims, len(p.claims))
+	for name, value := range p.claims {
+		claims[name] = value
+	}
+	return claims
+}

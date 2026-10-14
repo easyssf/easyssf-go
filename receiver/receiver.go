@@ -217,6 +217,14 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		return nil, err
 	}
 	metadata.Timeout = timeout
+	metadata.Retry = r.config.HTTP.Retry.Options()
+	// the configured headers go with every call, also those for metadata and keys that need no
+	// token
+	var headers Authorizer = NoAuthorization{}
+	if len(config.Headers) > 0 {
+		headers = StaticHeaders(config.Headers)
+		metadata.Authorizer = headers
+	}
 	urls := make([]string, 0, len(metadata.MetadataURLs()))
 	for _, u := range metadata.MetadataURLs() {
 		urls = append(urls, u.String())
@@ -227,13 +235,15 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	}
 
 	tokens := r.tokenProvider(config, timeout, o)
+	authorizer := Authorizers{headers, BearerToken(tokens)}
 	stream := NewReceiverStream()
-	streamClient := NewStreamClient(metadata, r.client, tokens)
+	streamClient := NewStreamClient(metadata, r.client, authorizer)
 	streamClient.Timeout = timeout
+	streamClient.Retry = r.config.HTTP.Retry.Options()
 	verification := NewStreamVerification(stream.StreamID)
 	verification.Log = r.log
 
-	transmitter := &Transmitter{Name: name, Issuer: issuer, Config: config, Metadata: metadata, Tokens: tokens,
+	transmitter := &Transmitter{Name: name, Issuer: issuer, Config: config, Metadata: metadata, Tokens: tokens, Authorizer: authorizer,
 		StreamClient: streamClient, Stream: stream, Verification: verification, AutoStartPolling: config.Poll.AutoStartup,
 		PushAuthorizationHeader: strings.TrimSpace(config.Push.ExpectedAuthHeader)}
 
@@ -245,6 +255,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		}
 		source := NewHTTPJWKSetSource(r.client, u)
 		source.Clock, source.Timeout = o.clock, timeout
+		source.Authorizer, source.Retry = metadata.Authorizer, metadata.Retry
 		transmitter.Keys = source
 	} else {
 		source := NewResolvedHTTPJWKSetSource(r.client, func(ctx context.Context) (*url.URL, error) {
@@ -258,6 +269,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 			return resolved.JWKSURI(), nil
 		})
 		source.Clock, source.Timeout = o.clock, timeout
+		source.Authorizer, source.Retry = metadata.Authorizer, metadata.Retry
 		transmitter.Keys = source
 	}
 
@@ -337,7 +349,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		} else {
 			endpoint = stream.PollEndpointURL
 		}
-		transmitter.Poller = NewPoller(r.client, tokens, endpoint, r.processor, pollerOptions)
+		transmitter.Poller = NewPoller(r.client, authorizer, endpoint, r.processor, pollerOptions)
 	}
 	return transmitter, nil
 }

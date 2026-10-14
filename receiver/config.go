@@ -102,6 +102,10 @@ type TransmitterConfig struct {
 	TransmitterAccessToken string `json:"transmitter-access-token" yaml:"transmitter-access-token" mapstructure:"transmitter-access-token"`
 	// OAuth2 obtains access tokens for the management and poll endpoints.
 	OAuth2 OAuth2Config `json:"oauth2" yaml:"oauth2" mapstructure:"oauth2"`
+	// Headers are sent with every call to the transmitter besides the bearer token: an API key,
+	// a tenant, whatever the transmitter wants. Headers for particular endpoints only are set
+	// with an EndpointHeaders Authorizer through WithTransmitterCustomizer.
+	Headers map[string]string `json:"headers" yaml:"headers" mapstructure:"headers"`
 	// Stream configures the stream at the transmitter.
 	Stream StreamConfig `json:"stream" yaml:"stream" mapstructure:"stream"`
 	// Poll configures poll delivery.
@@ -239,6 +243,27 @@ type HTTPConfig struct {
 	// UserAgent is the User-Agent header to send with calls to the transmitter; Go's default
 	// when empty.
 	UserAgent string `json:"user-agent" yaml:"user-agent" mapstructure:"user-agent"`
+	// Retry is how a management, metadata or JWK Set call that fails with a connection error or
+	// 408, 429, 500, 502, 503 or 504 is tried again. Poll requests are not retried, the poller
+	// has its interval.
+	Retry RetryConfig `json:"retry" yaml:"retry" mapstructure:"retry"`
+}
+
+// RetryConfig configures the retries of calls to the transmitter, see RetryOptions.
+type RetryConfig struct {
+	// MaxRetries is how many times a failed call is tried again, 2 by default; 0 never.
+	MaxRetries int `json:"max-retries" yaml:"max-retries" mapstructure:"max-retries"`
+	// InitialBackoff is the delay before the first retry, a quarter of a second by default; it
+	// doubles with every retry.
+	InitialBackoff Duration `json:"initial-backoff" yaml:"initial-backoff" mapstructure:"initial-backoff"`
+	// MaxBackoff is the longest delay between two tries, also for a Retry-After header, 5
+	// seconds by default.
+	MaxBackoff Duration `json:"max-backoff" yaml:"max-backoff" mapstructure:"max-backoff"`
+}
+
+// Options are the RetryOptions of the configuration.
+func (c RetryConfig) Options() RetryOptions {
+	return RetryOptions{MaxRetries: c.MaxRetries, InitialBackoff: c.InitialBackoff.Std(), MaxBackoff: c.MaxBackoff.Std()}
 }
 
 // DedupConfig configures the de-duplication of SETs.
@@ -381,7 +406,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:            true,
 		TransmitterConfig:  DefaultTransmitterConfig(),
-		HTTP:               HTTPConfig{Timeout: D(DefaultHTTPTimeout)},
+		HTTP:               HTTPConfig{Timeout: D(DefaultHTTPTimeout), Retry: RetryConfig{MaxRetries: 2, InitialBackoff: D(250 * time.Millisecond), MaxBackoff: D(5 * time.Second)}},
 		Dedup:              DedupConfig{Enabled: true, Capacity: 10_000, Retention: D(7 * 24 * time.Hour), Lease: D(DefaultDedupLease)},
 		Revocation:         RevocationConfig{Enabled: true, TTL: D(24 * time.Hour)},
 		SessionTermination: SessionTerminationConfig{Enabled: true},
@@ -467,6 +492,9 @@ func (c *Config) Validate() error {
 	}
 	if c.HTTP.Timeout <= 0 {
 		failures = append(failures, ConfigurationSection+".http.timeout: must be positive")
+	}
+	if c.HTTP.Retry.MaxRetries < 0 || c.HTTP.Retry.InitialBackoff < 0 || c.HTTP.Retry.MaxBackoff < 0 {
+		failures = append(failures, ConfigurationSection+".http.retry: max-retries, initial-backoff and max-backoff must not be negative")
 	}
 	if c.Dedup.Enabled && (c.Dedup.Capacity < 1 || c.Dedup.Lease <= 0 || c.Dedup.Retention <= 0) {
 		failures = append(failures, ConfigurationSection+".dedup: capacity must be at least 1, lease and retention positive")

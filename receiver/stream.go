@@ -76,20 +76,23 @@ func streamCall(status int, cause error, format string, args ...any) error {
 type StreamClient struct {
 	// Timeout is how long a call waits for the response; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// Retry says how a failed call is tried again; not at all if zero.
+	Retry RetryOptions
 
-	metadata *MetadataResolver
-	client   *http.Client
-	tokens   TokenProvider
+	metadata   *MetadataResolver
+	client     *http.Client
+	authorizer Authorizer
 }
 
 // NewStreamClient is a client that calls the transmitter with client (http.DefaultClient if
-// nil), authenticates with the tokens of tokens (none if nil) and finds the endpoints with
-// metadata.
-func NewStreamClient(metadata *MetadataResolver, client *http.Client, tokens TokenProvider) *StreamClient {
-	if tokens == nil {
-		tokens = NoToken{}
+// nil), authorizes its calls with authorizer (a TokenProvider such as FixedToken or
+// ClientCredentialsTokenProvider, BearerToken over another one, StaticHeaders, ...; none if
+// nil) and finds the endpoints with metadata.
+func NewStreamClient(metadata *MetadataResolver, client *http.Client, authorizer Authorizer) *StreamClient {
+	if authorizer == nil {
+		authorizer = NoAuthorization{}
 	}
-	return &StreamClient{metadata: metadata, client: orDefault(client), tokens: tokens}
+	return &StreamClient{metadata: metadata, client: orDefault(client), authorizer: authorizer}
 }
 
 // Streams lists the streams of this receiver (GET configuration_endpoint).
@@ -98,7 +101,7 @@ func (c *StreamClient) Streams(ctx context.Context) ([]*ssf.StreamConfiguration,
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodGet, endpoint, nil)
+	body, err := c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +133,7 @@ func (c *StreamClient) Stream(ctx context.Context, streamID string) (*ssf.Stream
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodGet, withStreamIDQuery(endpoint, streamID), nil)
+	body, err := c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodGet, withStreamIDQuery(endpoint, streamID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +148,7 @@ func (c *StreamClient) CreateStream(ctx context.Context, stream *ssf.StreamConfi
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodPost, endpoint, stream.Claims())
+	body, err := c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodPost, endpoint, stream.Claims())
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +169,7 @@ func (c *StreamClient) UpdateStream(ctx context.Context, streamID string, change
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodPatch, endpoint, withStreamID(changes, streamID))
+	body, err := c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodPatch, endpoint, withStreamID(changes, streamID))
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +182,7 @@ func (c *StreamClient) ReplaceStream(ctx context.Context, streamID string, strea
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodPut, endpoint, withStreamID(stream.Claims(), streamID))
+	body, err := c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodPut, endpoint, withStreamID(stream.Claims(), streamID))
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +195,7 @@ func (c *StreamClient) DeleteStream(ctx context.Context, streamID string) error 
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(ctx, http.MethodDelete, withStreamIDQuery(endpoint, streamID), nil)
+	_, err = c.exchange(WithEndpoint(ctx, EndpointConfiguration), http.MethodDelete, withStreamIDQuery(endpoint, streamID), nil)
 	return err
 }
 
@@ -202,7 +205,7 @@ func (c *StreamClient) Status(ctx context.Context, streamID string) (*ssf.Stream
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.exchange(ctx, http.MethodGet, withStreamIDQuery(endpoint, streamID), nil)
+	body, err := c.exchange(WithEndpoint(ctx, EndpointStatus), http.MethodGet, withStreamIDQuery(endpoint, streamID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +223,7 @@ func (c *StreamClient) UpdateStatus(ctx context.Context, streamID, status, reaso
 	if reason != "" {
 		body["reason"] = reason
 	}
-	response, err := c.exchange(ctx, http.MethodPost, endpoint, withStreamID(body, streamID))
+	response, err := c.exchange(WithEndpoint(ctx, EndpointStatus), http.MethodPost, endpoint, withStreamID(body, streamID))
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +238,7 @@ func (c *StreamClient) AddSubject(ctx context.Context, streamID string, subject 
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(ctx, http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject), "verified": verified}, streamID))
+	_, err = c.exchange(WithEndpoint(ctx, EndpointAddSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject), "verified": verified}, streamID))
 	return err
 }
 
@@ -246,7 +249,7 @@ func (c *StreamClient) RemoveSubject(ctx context.Context, streamID string, subje
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(ctx, http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject)}, streamID))
+	_, err = c.exchange(WithEndpoint(ctx, EndpointRemoveSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject)}, streamID))
 	return err
 }
 
@@ -261,7 +264,7 @@ func (c *StreamClient) RequestVerification(ctx context.Context, streamID, state 
 	if state != "" {
 		body["state"] = state
 	}
-	_, err = c.exchange(ctx, http.MethodPost, endpoint, withStreamID(body, streamID))
+	_, err = c.exchange(WithEndpoint(ctx, EndpointVerification), http.MethodPost, endpoint, withStreamID(body, streamID))
 	return err
 }
 
@@ -287,7 +290,7 @@ func (c *StreamClient) exchange(ctx context.Context, method string, u *url.URL, 
 	if body != nil {
 		jsonBody, _ = json.Marshal(body)
 	}
-	response, err := exchange(ctx, c.client, c.tokens, c.Timeout, method, u, jsonBody)
+	response, err := exchange(ctx, c.client, c.authorizer, c.Retry, c.Timeout, method, u, jsonBody)
 	if err != nil {
 		return nil, streamCall(0, err, "%s %s failed", method, u)
 	}

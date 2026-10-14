@@ -25,9 +25,10 @@ One Go module, `github.com/easyssf/easyssf-go`. Packages, in dependency order:
 
 | Package | Holds | Port of | Depends on |
 |---|---|---|---|
-| `ssf` | The vocabulary: SETs (`EventToken`), subjects (`Subject`, `SubjectIdentifier`, the builders `IssSub`, `Email`, `Complex`, ...), `DeliveryMethod`, `StreamConfiguration`, `TransmitterMetadata`, over `map[string]any` | `easyssf-core` | stdlib |
+| `ssf` | The vocabulary: SETs (`EventToken`, the builder `NewSET`), subjects (`Subject`, `SubjectIdentifier`, the builders `IssSub`, `Email`, `Complex`, ...), `DeliveryMethod`, `StreamConfiguration`, `TransmitterMetadata`, over `map[string]any` | `easyssf-core` | stdlib |
 | `ssf/eventtypes` | The event type URIs of SSF, CAEP, RISC and SCIM Events and the alias registry | `easyssf-core::event_types` | stdlib |
-| `ssf/caep`, `ssf/risc`, `ssf/scim` | The typed events per family: kinds / operations, common and event-specific claims, the `scim` subject | `easyssf-core::{caep,risc,scim}` | `ssf` |
+| `ssf/caep`, `ssf/risc`, `ssf/scim` | The typed events per family: kinds / operations, common and event-specific claims, the `scim` subject; `caep.NewPayload` | `easyssf-core::{caep,risc,scim}` | `ssf` |
+| `ssf/signing` | `Signer`: signs the claims of `ssf.NewSET` as a SET with an RSA, ECDSA or Ed25519 key, for tests and small senders; keeps go-jose out of `ssf` | none, Go only | `ssf`, `go-jose/v4` |
 | `receiver` | The receiver: verification, de-duplication, push, poll, stream management, typed handlers, revocation, session termination, metrics, `Config`, `Transmitter` and `Receiver` | `easyssf-receiver` incl. `config` and `receiver` | `ssf`, `go-jose/v4` |
 | `ssftest` | `TestTransmitter`: signs SETs, serves metadata and JWK Set, issues tokens, emulates stream management and the poll endpoint, in-process over an `http.RoundTripper` | `easyssf-test` | `ssf`, `go-jose/v4` |
 | `receiver/sqlstore` | The three tables shared with Java, .NET and Rust, on `database/sql`, with the `SQLite`, `PostgreSQL` and `MySQL` dialects | `easyssf-receiver-sqlx` | `receiver` |
@@ -134,9 +135,12 @@ cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m 
   `time.Sleep` in tests of time-dependent behaviour.
 - **Calls to the transmitter go through `exchange`/`send` in `transmitter.go`**: a per-call
   timeout from the context (`DefaultHTTPTimeout`, `easyssf.receiver.http.timeout`; a long poll
-  gets its hold plus `LongPollMargin`), the bearer token of the `TokenProvider`, and one retry
-  with a new token after a 401 when the provider implements `TokenInvalidator`. The default
-  client has no `Timeout` of its own, so that a long poll can outlast the other calls.
+  gets its hold plus `LongPollMargin`), the `Authorizer` of the transmitter (the bearer token of
+  its `TokenProvider` plus `easyssf.receiver.headers`; the endpoint is in the context,
+  `EndpointOf`), retries per `RetryOptions` on connection errors and 408/429/5xx (not for poll
+  requests), and one more try with a new token after a 401 when the authorizer implements
+  `TokenInvalidator`. The default client has no `Timeout` of its own, so that a long poll can
+  outlast the other calls.
 - **`Transmitter` is a plain struct with exported fields** that `Receiver.New` fills from the
   configuration and `WithTransmitterCustomizer` may replace; the Rust builder and the .NET
   factory in one. `Receiver` keeps them in configuration order, `default` first.
@@ -170,6 +174,12 @@ The Java test classes and their Go files, so that the four suites can be compare
 | `SsfCaepEventHandlerTests`, `SsfRiscEventHandlerTests`, `SsfScimEventHandlerTests` | `receiver/typed_handlers_test.go`, `ssf/{caep,risc,scim}/*_test.go` |
 | `AbstractJdbcSsfStoresTests`, `AbstractJdbcSharedReceiversTests` | `receiver/sqlstore/stores_test.go`, `receiver/sqlstore/shared_receivers_test.go` |
 | `ConformanceSuiteModulesTests`, `ConformanceRunLocalTransmitterTests`, the four plan tests | `conformance/modules_test.go`, `conformance/run_test.go`, `conformance/plans_test.go` |
+
+Go only, no counterpart in the other ports: `receiver.Authorizer` (every transmitter call goes
+through one; `TokenProvider`s are Authorizers), `RetryOptions` for management, metadata and JWK
+Set calls (the poller does not retry, it has its interval), `ssf.NewSET` and `ssf/signing`.
+Subject formats that RFC 9493 dropped (`jwt_id`, `saml_assertion_id`) are not supported on
+purpose: nothing in production sends them.
 
 Not included, on purpose, as in the other ports: a transmitter, an OpenTelemetry `Metrics`
 implementation (a separate module when it comes), session integrations for gorilla/sessions or

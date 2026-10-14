@@ -32,6 +32,7 @@ import (
 
 	"github.com/easyssf/easyssf-go/ssf"
 	"github.com/easyssf/easyssf-go/ssf/eventtypes"
+	"github.com/easyssf/easyssf-go/ssf/signing"
 )
 
 const (
@@ -44,9 +45,9 @@ const (
 	// AccessToken is the access token the token endpoint issues until ExpireAccessTokens.
 	AccessToken = "transmitter-access-token"
 	// SecEventJWTType is the typ header of a SET (RFC 8417, section 2.3).
-	SecEventJWTType = "secevent+jwt"
+	SecEventJWTType = signing.SecEventJWTType
 	// JWTType is the typ header of a plain JWT such as an access token.
-	JWTType = "JWT"
+	JWTType = signing.JWTType
 
 	realm         = "/realms/test"
 	wellKnownPath = "/.well-known/ssf-configuration"
@@ -467,8 +468,8 @@ func Sign(key *SigningKey, typ string, claims ssf.Claims) string {
 }
 
 // SignWith signs the claims as a JWS in compact serialization with an RSA algorithm of RFC
-// 7518: RS256, RS384, RS512, PS256, PS384 or PS512. No minimum key size: tests need to sign with
-// keys the receiver has to reject.
+// 7518: RS256, RS384, RS512, PS256, PS384 or PS512. No minimum key size, unlike
+// signing.NewSigner: tests need to sign with keys the receiver has to reject.
 func SignWith(key *SigningKey, algorithm jose.SignatureAlgorithm, typ string, claims ssf.Claims) string {
 	options := (&jose.SignerOptions{}).WithHeader(jose.HeaderKey("kid"), key.KeyID)
 	if typ != "" {
@@ -488,6 +489,15 @@ func SignWith(key *SigningKey, algorithm jose.SignatureAlgorithm, typ string, cl
 		panic(err)
 	}
 	return compact
+}
+
+// Signer is the transmitter's key as a signing.Signer, RS256, for SETs built with ssf.NewSET.
+func (t *TestTransmitter) Signer() *signing.Signer {
+	signer, err := signing.NewSigner(t.key.Key, jose.RS256, t.key.KeyID)
+	if err != nil {
+		panic(err)
+	}
+	return signer
 }
 
 // Unsigned is the claims as an unsecured JWT (RFC 7519, section 6): alg of none, no signature.
@@ -835,11 +845,7 @@ func (r *responseRecorder) Header() http.Header         { return r.header }
 func (r *responseRecorder) Write(b []byte) (int, error) { return r.body.Write(b) }
 func (r *responseRecorder) WriteHeader(status int)      { r.status = status }
 
-func newJTI() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("%x", b)
-}
+func newJTI() string { return ssf.NewJTI() }
 
 // TB is the part of testing.TB that Eventually and During need.
 type TB interface {

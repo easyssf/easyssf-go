@@ -247,12 +247,12 @@ type pollResult struct {
 // altogether; Transmitter.Start arranges for it when the stream is registered, so that the first
 // poll follows the registration at once.
 type Poller struct {
-	client    *http.Client
-	tokens    TokenProvider
-	endpoint  PollEndpoint
-	processor *Processor
-	options   PollerOptions
-	log       *slog.Logger
+	client     *http.Client
+	authorizer Authorizer
+	endpoint   PollEndpoint
+	processor  *Processor
+	options    PollerOptions
+	log        *slog.Logger
 
 	polling sync.Mutex // held while a poll runs
 
@@ -267,10 +267,11 @@ type Poller struct {
 }
 
 // NewPoller is a poller that fetches from endpoint (which supplies nil as long as the endpoint
-// is not known), calls the transmitter with client (http.DefaultClient if nil), authenticates
-// with tokens (none if nil) and processes the SETs with processor. It panics if an option is out
-// of range: interval, max events, max ack batch, max pause and endpoint retry must be positive.
-func NewPoller(client *http.Client, tokens TokenProvider, endpoint PollEndpoint, processor *Processor, options PollerOptions) *Poller {
+// is not known), calls the transmitter with client (http.DefaultClient if nil), authorizes the
+// requests with authorizer (a TokenProvider, BearerToken, StaticHeaders, ...; none if nil) and
+// processes the SETs with processor. It panics if an option is out of range: interval, max
+// events, max ack batch, max pause and endpoint retry must be positive.
+func NewPoller(client *http.Client, authorizer Authorizer, endpoint PollEndpoint, processor *Processor, options PollerOptions) *Poller {
 	if options.Interval <= 0 || options.MaxEvents <= 0 || options.MaxAckBatch <= 0 || options.MaxPause <= 0 || options.EndpointRetry <= 0 {
 		panic("receiver: PollerOptions interval, max events, max ack batch, max pause and endpoint retry must be positive")
 	}
@@ -286,10 +287,10 @@ func NewPoller(client *http.Client, tokens TokenProvider, endpoint PollEndpoint,
 	if options.Clock == nil {
 		options.Clock = SystemClock
 	}
-	if tokens == nil {
-		tokens = NoToken{}
+	if authorizer == nil {
+		authorizer = NoAuthorization{}
 	}
-	return &Poller{client: orDefault(client), tokens: tokens, endpoint: endpoint, processor: processor, options: options,
+	return &Poller{client: orDefault(client), authorizer: authorizer, endpoint: endpoint, processor: processor, options: options,
 		log: orDiscard(options.Log), wake: make(chan struct{}, 1)}
 }
 
@@ -608,7 +609,8 @@ func (p *Poller) request(ctx context.Context, endpoint *url.URL, key string, max
 		timeout = options.LongPollingHold + LongPollMargin
 	}
 	started := time.Now()
-	response, err := exchange(ctx, p.client, p.tokens, timeout, http.MethodPost, endpoint, jsonBody)
+	// not retried: the poller has its interval, and a 429 or 503 pauses it below
+	response, err := exchange(WithEndpoint(ctx, EndpointPoll), p.client, p.authorizer, RetryOptions{}, timeout, http.MethodPost, endpoint, jsonBody)
 	if err != nil {
 		options.Metrics.PollCompleted(options.Transmitter, time.Since(started), false)
 		return nil, &PollError{Message: fmt.Sprintf("Poll request to %s failed", endpoint), Cause: err}

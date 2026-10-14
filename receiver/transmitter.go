@@ -126,6 +126,10 @@ func DeriveMetadataURLs(issuer string) ([]*url.URL, error) {
 type MetadataResolver struct {
 	// Timeout is how long a fetch waits for the response; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// Authorizer adds what the fetch needs, for example an API key; nothing if nil.
+	Authorizer Authorizer
+	// Retry says how a failed fetch is tried again; not at all if zero.
+	Retry RetryOptions
 
 	issuer   string
 	urls     []*url.URL
@@ -194,7 +198,7 @@ func (r *MetadataResolver) Resolve(ctx context.Context) (*ssf.TransmitterMetadat
 }
 
 func (r *MetadataResolver) fetch(ctx context.Context, u *url.URL) (*ssf.TransmitterMetadata, error) {
-	body, err := getJSON(ctx, r.client, r.Timeout, u, "application/json")
+	body, err := getJSON(WithEndpoint(ctx, EndpointMetadata), r.client, r.Authorizer, r.Retry, r.Timeout, u, "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -258,10 +262,11 @@ type httpResponse struct {
 
 func (r *httpResponse) successful() bool { return r.status >= 200 && r.status < 300 }
 
-// send performs one request and returns the response whatever its status; an error means no
-// response was received. The body is bounded by maxResponseSize. The request waits timeout
-// (DefaultHTTPTimeout if zero) unless ctx has an earlier deadline.
-func send(ctx context.Context, client *http.Client, timeout time.Duration, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
+// send performs one request, authorized by authorizer if not nil, and returns the response
+// whatever its status; an error means no response was received. The body is bounded by
+// maxResponseSize. The request waits timeout (DefaultHTTPTimeout if zero) unless ctx has an
+// earlier deadline.
+func send(ctx context.Context, client *http.Client, authorizer Authorizer, timeout time.Duration, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
 	if timeout <= 0 {
 		timeout = DefaultHTTPTimeout
 	}
@@ -278,6 +283,11 @@ func send(ctx context.Context, client *http.Client, timeout time.Duration, metho
 	for name, value := range headers {
 		request.Header.Set(name, value)
 	}
+	if authorizer != nil {
+		if err := authorizer.Authorize(ctx, request); err != nil {
+			return nil, err
+		}
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
@@ -290,9 +300,11 @@ func send(ctx context.Context, client *http.Client, timeout time.Duration, metho
 	return &httpResponse{status: response.StatusCode, header: response.Header, body: data}, nil
 }
 
-// getJSON performs a GET and returns the body of a 2xx response.
-func getJSON(ctx context.Context, client *http.Client, timeout time.Duration, u *url.URL, accept string) ([]byte, error) {
-	response, err := send(ctx, client, timeout, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
+// getJSON performs a GET, tried again per retry, and returns the body of a 2xx response.
+func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, retry RetryOptions, timeout time.Duration, u *url.URL, accept string) ([]byte, error) {
+	response, err := retrying(ctx, retry, func(ctx context.Context) (*httpResponse, error) {
+		return send(ctx, client, authorizer, timeout, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -302,39 +314,27 @@ func getJSON(ctx context.Context, client *http.Client, timeout time.Duration, u 
 	return response.body, nil
 }
 
-// exchange calls an endpoint of the transmitter with the bearer token of the provider, a JSON
-// body if not nil, and tries once more with a new token when the transmitter answers 401: the
-// access token expired or was revoked. The response comes back whatever its status; an error
-// means the token could not be obtained or no response was received.
-func exchange(ctx context.Context, client *http.Client, tokens TokenProvider, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
-	response, err := sendAuthenticated(ctx, client, tokens, timeout, method, u, jsonBody)
-	if err != nil {
-		return nil, err
-	}
-	if response.status == http.StatusUnauthorized {
-		if invalidator, ok := tokens.(TokenInvalidator); ok {
-			invalidator.Invalidate()
-		}
-		return sendAuthenticated(ctx, client, tokens, timeout, method, u, jsonBody)
-	}
-	return response, nil
-}
-
-func sendAuthenticated(ctx context.Context, client *http.Client, tokens TokenProvider, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
+// exchange calls an endpoint of the transmitter, authorized by authorizer, with a JSON body if
+// not nil, tried again per retry, and once more with a new token when the transmitter answers
+// 401 and the authorizer can invalidate its token: the access token expired or was revoked. The
+// response comes back whatever its status; an error means the request could not be authorized
+// or no response was received.
+func exchange(ctx context.Context, client *http.Client, authorizer Authorizer, retry RetryOptions, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
 	headers := map[string]string{"Accept": "application/json"}
-	if tokens != nil {
-		token, err := tokens.AccessToken(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if token != "" {
-			headers["Authorization"] = "Bearer " + token
-		}
-	}
 	if jsonBody != nil {
 		headers["Content-Type"] = "application/json"
 	}
-	return send(ctx, client, timeout, method, u, headers, jsonBody)
+	call := func(ctx context.Context) (*httpResponse, error) {
+		return send(ctx, client, authorizer, timeout, method, u, headers, jsonBody)
+	}
+	response, err := retrying(ctx, retry, call)
+	if err != nil {
+		return nil, err
+	}
+	if response.status == http.StatusUnauthorized && invalidate(authorizer) {
+		return retrying(ctx, retry, call)
+	}
+	return response, nil
 }
 
 // TokenProvider provides the access token the receiver authenticates with when it calls the
@@ -458,7 +458,7 @@ func (p *ClientCredentialsTokenProvider) requestToken(ctx context.Context) (stri
 	} else {
 		headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(p.clientID)+":"+url.QueryEscape(p.clientSecret)))
 	}
-	response, err := send(ctx, p.client, p.options.Timeout, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
+	response, err := send(WithEndpoint(ctx, EndpointToken), p.client, nil, p.options.Timeout, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
 	if err != nil {
 		return "", time.Time{}, Unavailable(err, "could not obtain an access token for the SSF transmitter from %s", p.tokenURL)
 	}
@@ -510,6 +510,9 @@ type Transmitter struct {
 	// Tokens authenticates the receiver at the transmitter; nil if the transmitter is not
 	// called.
 	Tokens TokenProvider
+	// Authorizer is what the calls to the transmitter go through: the bearer token of Tokens
+	// and the configured headers.
+	Authorizer Authorizer
 	// StreamClient calls the stream management API; nil if the transmitter is not called.
 	StreamClient *StreamClient
 	// Stream holds the stream of the receiver at the transmitter once it is known.

@@ -130,3 +130,17 @@ func TestOfResolvesAliasesAndRejectsOtherEventTypes(t *testing.T) {
 		t.Fatal("not caep")
 	}
 }
+
+func TestPayloadBuilderMakesTheCommonClaims(t *testing.T) {
+	at := time.Unix(1700000000, 0)
+	payload := caep.NewPayload().EventTimestamp(at).InitiatingEntity("admin").
+		ReasonAdmin("en", "Policy").ReasonAdmin("de", "Richtlinie").ReasonUser("en", "Please sign in again").
+		Claim("current_level", "high").Build()
+	event := caep.Of(eventtypes.CaepAssuranceLevelChange, payload)
+	if stamp, ok := event.EventTimestamp(); !ok || !stamp.Equal(at) {
+		t.Fatalf("%v %v", stamp, ok)
+	}
+	if event.InitiatingEntity() != "admin" || event.ReasonAdmin()["de"] != "Richtlinie" || event.ReasonUser()["en"] != "Please sign in again" || event.CurrentLevel() != "high" {
+		t.Fatalf("%v", payload)
+	}
+}

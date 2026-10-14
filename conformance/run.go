@@ -98,7 +98,7 @@ func NewRun(id string, scenario Scenario, issuer string, delivery ssf.DeliveryMe
 	metadata.Timeout = 30 * time.Second
 	run.metadata = metadata
 	tokens := run.tokenProvider(client)
-	run.streams = receiver.NewStreamClient(metadata, client, tokens)
+	run.streams = receiver.NewStreamClient(metadata, client, receiver.BearerToken(tokens))
 	run.streams.Timeout = 30 * time.Second
 	verification := receiver.NewStreamVerification(run.StreamID)
 	verification.Log = log
@@ -151,7 +151,7 @@ func NewRun(id string, scenario Scenario, issuer string, delivery ssf.DeliveryMe
 		pollerOptions.Transmitter = issuer
 		pollerOptions.Timeout = 30 * time.Second
 		pollerOptions.Log = log
-		run.poller = receiver.NewPoller(client, tokens, func() *url.URL {
+		run.poller = receiver.NewPoller(client, receiver.BearerToken(tokens), func() *url.URL {
 			run.mu.Lock()
 			defer run.mu.Unlock()
 			if run.stream == nil || run.streamDeleted {
