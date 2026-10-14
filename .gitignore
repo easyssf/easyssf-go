@@ -1,0 +1,25 @@
+# --- Go ---
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# --- Project ---
+/scratch/
+
+# --- Editors / IDEs ---
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
