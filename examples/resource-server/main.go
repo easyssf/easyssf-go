@@ -36,9 +36,9 @@ func env(name, fallback string) string {
 	return fallback
 }
 
-// keycloakConfig is the receiver configuration of config.toml / application.yaml of the other
-// ports: the application registers its own stream on startup with the service account of its
-// client, Keycloak assigns the audience.
+// keycloakConfig is the receiver configuration for the Keycloak of examples/keycloak: the
+// application registers its own stream on startup with the service account of its client,
+// Keycloak assigns the audience.
 func keycloakConfig(issuer string, poll bool) receiver.Config {
 	config := receiver.DefaultConfig()
 	config.TransmitterIssuer = issuer
@@ -82,7 +82,7 @@ func run() error {
 	config := keycloakConfig(env("KEYCLOAK_ISSUER", "http://localhost:8080/realms/ssf-demo"), *poll)
 
 	// the application's own handler, on top of the built-in revocation of access tokens: logs
-	// every event, like the AuditingSsfEventHandler of the Java example
+	// every event
 	audit := receiver.HandlerFunc(func(ctx context.Context, event *receiver.Context) error {
 		for _, eventType := range event.EventTypes() {
 			subject := event.SubjectFor(eventType)
