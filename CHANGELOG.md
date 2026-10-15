@@ -54,7 +54,8 @@ All notable changes to this project will be documented in this file. The format 
   from `easyssf.receiver.data`; `schema.sql` and `migration/*.sql` are the files of the Java
   library byte for byte.
 - `receiver`: `URIPolicy.CheckRedirect`: a redirect of any call to the transmitter is followed
-  only to the same host and only where the policy allows the scheme, whatever the
+  only within the origin of the request (`SameOrigin`: scheme, host and effective port) and
+  only where the policy allows the scheme, whatever the
   `http.Client`'s own `CheckRedirect`; an https endpoint cannot send the receiver and its
   credentials to http or elsewhere. The poll endpoint of a registered stream, `oauth2.token-uri`
   and `poll.endpoint-url` are checked against the policy like the other endpoints.

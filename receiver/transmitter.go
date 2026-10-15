@@ -65,20 +65,39 @@ func (p URIPolicy) CheckIssuer(issuer string) (*url.URL, error) {
 	return u, p.checkScheme(u, "transmitter issuer")
 }
 
-// CheckRedirect decides whether a redirect of a call to the transmitter is followed: only to the
-// same host as the request that was redirected (credentials and headers must not leave the
-// transmitter), only where the scheme passes the policy (an https endpoint may not send the
-// receiver to http), and at most 10 times. Every call to a transmitter applies it, whatever
-// the http.Client's own CheckRedirect.
+// CheckRedirect decides whether a redirect of a call to the transmitter is followed: only within
+// the origin of the request that was redirected, the same scheme, host and port (credentials and
+// headers must not leave the transmitter, and another port is another service), only where the
+// scheme passes the policy, and at most 10 times. Every call to a transmitter applies it,
+// whatever the http.Client's own CheckRedirect.
 func (p URIPolicy) CheckRedirect(target *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("the SSF transmitter redirected more than 10 times")
 	}
 	original := via[0].URL
-	if !strings.EqualFold(target.URL.Hostname(), original.Hostname()) {
-		return fmt.Errorf("the SSF transmitter redirected %s to another host, %s, which is not followed", original, target.URL)
+	if !SameOrigin(target.URL, original) {
+		return fmt.Errorf("the SSF transmitter redirected %s to another origin, %s, which is not followed", original, target.URL)
 	}
 	return p.CheckEndpoint(target.URL, "the redirect target of "+original.String())
+}
+
+// SameOrigin reports whether the URLs have the same scheme, host and effective port, the port
+// being 443 for https and 80 for http when none is given (RFC 6454, section 4).
+func SameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // redirecting is the client with the policy's CheckRedirect, a shallow copy so that the

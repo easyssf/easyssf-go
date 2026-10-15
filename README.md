@@ -177,9 +177,9 @@ turns it off). Poll requests are not retried: the poller has its interval and pa
 
 Every endpoint of a transmitter, configured or taken from its metadata or stream, must use
 `https`, or `http` on loopback (`allow-insecure-http` lifts that, for development only). A
-redirect is followed only to the same host and only to a scheme the policy allows, whatever the
-`http.Client` passed in would do: an `https` endpoint cannot send the receiver's token to
-`http` or to another host.
+redirect is followed only within the origin of the request, the same scheme, host and port, and
+only to a scheme the policy allows, whatever the `http.Client` passed in would do: an `https`
+endpoint cannot send the receiver's token to `http`, to another host or to another port.
 
 Every call to a transmitter goes through a `receiver.Authorizer`: the bearer token of its
 `TokenProvider`, and the headers of `easyssf.receiver.headers` (an API key, a tenant), which are

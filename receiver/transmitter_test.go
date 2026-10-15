@@ -270,15 +270,63 @@ func TestFollowsRedirectToTheSameHostOverHTTPS(t *testing.T) {
 func TestRefusesRedirectFromHTTPSToHTTP(t *testing.T) {
 	transmitter := ssftest.New()
 	resolver := redirectingResolver(t, transmitter, "http://transmitter.example/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{})
-	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
 		t.Fatalf("%v", err)
+	}
+}
+
+func TestRedirectStaysWithinTheOrigin(t *testing.T) {
+	policy := receiver.URIPolicy{AllowInsecureHTTP: true}
+	for _, c := range []struct {
+		from, to string
+		followed bool
+	}{
+		{"https://transmitter.example/a", "https://transmitter.example/b", true},
+		{"https://transmitter.example:443/a", "https://transmitter.example/b", true},
+		{"https://transmitter.example/a", "https://transmitter.example:443/b", true},
+		{"https://transmitter.example/a", "https://TRANSMITTER.example/b", true},
+		{"http://transmitter.example:8080/a", "http://transmitter.example:8080/b", true},
+		{"https://transmitter.example/a", "https://transmitter.example:8443/b", false},
+		{"https://transmitter.example:8443/a", "https://transmitter.example/b", false},
+		{"https://transmitter.example/a", "http://transmitter.example/b", false},
+		{"http://transmitter.example/a", "https://transmitter.example/b", false},
+		{"https://transmitter.example/a", "https://other.example/b", false},
+		{"https://transmitter.example/a", "https://sub.transmitter.example/b", false},
+	} {
+		from, _ := url.Parse(c.from)
+		to, _ := url.Parse(c.to)
+		err := policy.CheckRedirect(&http.Request{URL: to}, []*http.Request{{URL: from}})
+		if (err == nil) != c.followed {
+			t.Errorf("%s -> %s: followed %v, want %v (%v)", c.from, c.to, err == nil, c.followed, err)
+		}
+	}
+}
+
+func TestRefusesRedirectToAnotherPortOfTheSameHost(t *testing.T) {
+	transmitter := ssftest.New()
+	resolver := redirectingResolver(t, transmitter, "https://transmitter.example:8443/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{})
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestFollowsRedirectFromTheExplicitDefaultPort(t *testing.T) {
+	transmitter := ssftest.New()
+	client := &http.Client{Transport: &redirecting{next: transmitter.Client.Transport}}
+	metadataURL, _ := url.Parse("https://transmitter.example:443/redirect/metadata?to=" + url.QueryEscape("https://transmitter.example/.well-known/ssf-configuration/realms/test"))
+	resolver, err := receiver.NewMetadataResolver(transmitter.Issuer(), metadataURL, client, receiver.URIPolicy{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestRefusesRedirectToAnotherHost(t *testing.T) {
 	transmitter := ssftest.New()
 	resolver := redirectingResolver(t, transmitter, "https://other.example/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{AllowInsecureHTTP: true})
-	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another host") {
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
 		t.Fatalf("%v", err)
 	}
 }
@@ -292,7 +340,7 @@ func TestRedirectCheckIgnoresTheClientsOwnPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
 		t.Fatalf("%v", err)
 	}
 	if client.CheckRedirect == nil {
@@ -310,7 +358,7 @@ func TestStreamManagementCallsRefuseRedirectToHTTP(t *testing.T) {
 	transmitter.PublishDocument("/.well-known/ssf-configuration/realms/test", string(metadata))
 	resolver, _ := receiver.NewMetadataResolver(transmitter.Issuer(), nil, client, receiver.URIPolicy{}, nil)
 	streams := receiver.NewStreamClient(resolver, client, receiver.FixedToken(ssftest.AccessToken))
-	if _, err := streams.Streams(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
+	if _, err := streams.Streams(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
 		t.Fatalf("%v", err)
 	}
 }

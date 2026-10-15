@@ -140,7 +140,7 @@ cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m 
   `EndpointOf`), retries per `RetryOptions` on connection errors and 408/429/5xx (not for poll
   requests), and one more try with a new token after a 401 when the authorizer implements
   `TokenInvalidator`. Redirects go through `URIPolicy.CheckRedirect` on a shallow copy of the
-  client: same host only, scheme per policy. The default client has no `Timeout` of its own, so
+  client: same origin only (scheme, host, effective port), scheme per policy. The default client has no `Timeout` of its own, so
   that a long poll can outlast the other calls.
 - **`Config.Validate` is pure.** It reports, it changes nothing: aliases are checked with
   `eventtypes.CheckAlias` and registered by `receiver.New` after the whole configuration
