@@ -10,8 +10,11 @@ Go building blocks for the OpenID Shared Signals Framework (SSF 1.0) with CAEP, 
 Events (RFC 9967): a **receiver** library on `net/http`, database stores on `database/sql`, and
 an in-process test transmitter. The code sits in the authentication path of its users, so
 correctness of verification beats convenience everywhere. Receiver only, no transmitter.
-Apache-2.0. Status: pre-1.0, the port is complete; the version follows the Java library
-(`0.7.0-alpha.N`), breaking changes are acceptable when the CHANGELOG says so.
+Apache-2.0. Status: released as 0.6.0, at parity with easyssf 0.6.0 for Java; the version
+follows the Java library, pre-1.0, breaking changes are acceptable when the CHANGELOG says so.
+A release is a signed-off "Release X.Y.Z" commit that moves the `Unreleased` section of the
+CHANGELOG under the version, and an annotated tag `vX.Y.Z` on it; the `conformance` module is
+not published and gets no tag.
 
 This is a port of [easyssf for Java](https://github.com/easyssf/easyssf), following the playbook
 of [easyssf-dotnet](https://github.com/easyssf/easyssf-dotnet) and
@@ -53,7 +56,7 @@ New protocol behaviour goes into `receiver`, new vocabulary into `ssf`, database
 go test -race ./...                      # everything, in-process, no network, no Docker
 go test ./receiver -run TestRejects      # the negative verifier tests
 go vet ./... && gofmt -l .               # CI fails on either
-go run honnef.co/go/tools/cmd/staticcheck@latest ./...   # CI runs it
+make lint                                # golangci-lint (.golangci.yml, includes staticcheck) and govulncheck; CI runs both
 go run ./examples/resource-server -demo  # pushes one SET to itself through the test transmitter
 EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=postgres://... EASYSSF_MYSQL_URL=user:pw@tcp(host:3306)/db go test ./receiver/sqlstore
 cd conformance && go test ./...            # the scenarios against the test transmitter, no Docker
@@ -160,8 +163,9 @@ cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m 
 - **Handlers are idempotent** and a SET that any handler fails on is delivered again. State that
   must survive a restart belongs in a store interface with an in-memory and a sqlstore
   implementation.
-- Every exported identifier has a doc comment that starts with its name; `go vet`, `gofmt` and
-  `staticcheck` are clean. No cgo.
+- Every exported identifier has a doc comment that starts with its name; `go vet`, `gofmt`,
+  golangci-lint with `.golangci.yml` (which includes staticcheck) and govulncheck are clean. A
+  `//nolint` carries its reason. No cgo.
 
 ## Where things are
 

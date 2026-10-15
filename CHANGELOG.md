@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-15
+
+The first release: the complete port, at feature parity with easyssf 0.6.0 for Java and
+passing the four receiver test plans of the OpenID conformance suite.
+
 ### Added
 
 - `ssf`: the vocabulary of SSF 1.0 ported from `easyssf-core` of the Java library: `EventToken`,
@@ -90,8 +95,13 @@ All notable changes to this project will be documented in this file. The format 
   `Handler`, `cmd/cts`), the plans with the expected outcome of every module (`RunPlan`), the
   suite configurations, TLS material and `run-plan.sh` of the Java harness, and the nightly
   `Conformance` workflow.
+- golangci-lint with `.golangci.yml` and govulncheck, run by `make lint` and CI; CI tests on
+  the minimum Go of `go.mod` and the latest stable release.
 - Tests ported from the Java and Rust suites: the verifier, the dedup store, the processor, the
   push handler, stream management and verification, the poller and its rate limiting, the
   transmitters, the configured receiver, session termination and the subject matcher, the typed
   handlers, the stores on SQLite (PostgreSQL and MySQL with `EASYSSF_DATABASE_TESTS=true`) and
   two receiver instances on one database.
+
+[Unreleased]: https://github.com/easyssf/easyssf-go/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/easyssf/easyssf-go/releases/tag/v0.6.0

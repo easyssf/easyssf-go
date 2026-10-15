@@ -30,7 +30,7 @@ mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 
 | | |
 |---|---|
-| **Status** | Pre-1.0; the version follows the Java library (`0.7.0-alpha.N`), breaking changes are acceptable when the CHANGELOG says so |
+| **Status** | 0.6.0, at feature parity with [easyssf 0.6.0 for Java](https://github.com/easyssf/easyssf); the version follows the Java library. Pre-1.0: breaking changes are acceptable when the CHANGELOG says so |
 | **Go** | 1.25 or later, no cgo |
 | **Dependencies** | `github.com/go-jose/go-jose/v4` for JWS and JWK; `modernc.org/sqlite`, `pgx` and `go-sql-driver/mysql` only for the tests of `receiver/sqlstore`; everything else is the standard library |
 | **License** | Apache-2.0 |
@@ -356,6 +356,6 @@ manual runs against a suite of your own.
 ```sh
 go test -race ./...                                   # everything, in-process, no network, no Docker
 EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=... EASYSSF_MYSQL_URL=... go test ./receiver/sqlstore
-go vet ./... && gofmt -l . && go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+go vet ./... && gofmt -l . && make lint    # golangci-lint and govulncheck
 go run ./examples/resource-server -demo
 ```
