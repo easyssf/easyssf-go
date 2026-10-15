@@ -7,13 +7,17 @@ on:
 
 jobs:
   check:
-    name: Format, vet, test
+    name: Format, vet, test (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # the minimum of go.mod and the latest stable release
+        go: ["1.25.x", "stable"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race ./...
@@ -22,15 +26,22 @@ jobs:
       - run: cd conformance && go vet ./... && go test -race ./...
 
   lint:
-    name: staticcheck
+    name: golangci-lint, govulncheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
-      - run: cd conformance && go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+          go-version: stable
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+          working-directory: conformance
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: cd conformance && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   database:
     name: Stores on PostgreSQL and MySQL

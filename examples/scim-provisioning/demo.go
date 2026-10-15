@@ -93,18 +93,18 @@ func (p *DemoScimProvider) Create(uri, externalID string, user ssf.Claims) (ssf.
 	}
 	return p.transmit(uri, ssf.Claims{
 		eventtypes.ScimFeedAdd:        ssf.Claims{},
-		eventtypes.ScimProvCreateFull: ssf.Claims{"version": p.nextVersion(uri), "data": map[string]any(user)},
+		eventtypes.ScimProvCreateFull: ssf.Claims{"version": p.nextVersion(uri), "data": user},
 	})
 }
 
 // Replace replaces the user with SCIM PUT: prov:put:full with the new representation.
 func (p *DemoScimProvider) Replace(uri string, user ssf.Claims) (ssf.Claims, error) {
-	return p.transmit(uri, ssf.Claims{eventtypes.ScimProvPutFull: ssf.Claims{"version": p.nextVersion(uri), "data": map[string]any(user)}})
+	return p.transmit(uri, ssf.Claims{eventtypes.ScimProvPutFull: ssf.Claims{"version": p.nextVersion(uri), "data": user}})
 }
 
 // Patch modifies the user with SCIM PATCH: prov:patch:full with the PatchOp.
 func (p *DemoScimProvider) Patch(uri string, patchOp ssf.Claims) (ssf.Claims, error) {
-	return p.transmit(uri, ssf.Claims{eventtypes.ScimProvPatchFull: ssf.Claims{"version": p.nextVersion(uri), "data": map[string]any(patchOp)}})
+	return p.transmit(uri, ssf.Claims{eventtypes.ScimProvPatchFull: ssf.Claims{"version": p.nextVersion(uri), "data": patchOp}})
 }
 
 // PatchNotice reports a modification without its data: prov:patch:notice naming the attributes

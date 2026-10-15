@@ -238,7 +238,7 @@ func (c *StreamClient) AddSubject(ctx context.Context, streamID string, subject 
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(WithEndpoint(ctx, EndpointAddSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject), "verified": verified}, streamID))
+	_, err = c.exchange(WithEndpoint(ctx, EndpointAddSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": subject, "verified": verified}, streamID))
 	return err
 }
 
@@ -249,7 +249,7 @@ func (c *StreamClient) RemoveSubject(ctx context.Context, streamID string, subje
 	if err != nil {
 		return err
 	}
-	_, err = c.exchange(WithEndpoint(ctx, EndpointRemoveSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": map[string]any(subject)}, streamID))
+	_, err = c.exchange(WithEndpoint(ctx, EndpointRemoveSubject), http.MethodPost, endpoint, withStreamID(ssf.Claims{"subject": subject}, streamID))
 	return err
 }
 

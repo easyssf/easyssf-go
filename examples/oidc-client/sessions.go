@@ -57,7 +57,7 @@ func (s *Sessions) Start(w http.ResponseWriter) *Session {
 	s.mu.Lock()
 	s.sessions[session.ID] = session
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}) //nolint:gosec // not Secure: the example runs on plain http://localhost
 	return session
 }
 
@@ -69,7 +69,7 @@ func (s *Sessions) CycleID(w http.ResponseWriter, session *Session) {
 	session.ID = randomHex(16)
 	s.sessions[session.ID] = session
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: session.ID, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}) //nolint:gosec // not Secure: the example runs on plain http://localhost
 }
 
 // End ends the session and clears its cookie.
@@ -77,7 +77,7 @@ func (s *Sessions) End(w http.ResponseWriter, session *Session) {
 	s.mu.Lock()
 	delete(s.sessions, session.ID)
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode}) //nolint:gosec // not Secure: the example runs on plain http://localhost
 }
 
 // TerminateSessions implements receiver.SessionTerminator: ends the sessions whose user the

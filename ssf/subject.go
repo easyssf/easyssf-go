@@ -165,8 +165,8 @@ func SubjectFrom(subjectID Claims) *Subject {
 	}
 	format, hasFormat := subjectID["format"].(string)
 	// Early SSF drafts used complex subjects without a format member
-	complex := format == FormatComplex || (!hasFormat && hasObjectMembers(subjectID))
-	if !complex {
+	isComplex := format == FormatComplex || (!hasFormat && hasObjectMembers(subjectID))
+	if !isComplex {
 		return &Subject{raw: subjectID, identifier: SubjectIdentifierFrom(subjectID)}
 	}
 	var members []member

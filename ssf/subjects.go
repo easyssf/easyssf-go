@@ -53,7 +53,7 @@ func SCIM(uri, externalID string) Claims {
 func Aliases(identifiers ...Claims) Claims {
 	list := make([]any, 0, len(identifiers))
 	for _, identifier := range identifiers {
-		list = append(list, map[string]any(identifier))
+		list = append(list, identifier)
 	}
 	return Claims{"format": FormatAliases, "identifiers": list}
 }
@@ -63,7 +63,7 @@ func Aliases(identifiers ...Claims) Claims {
 func ComplexMembers(members map[string]Claims) Claims {
 	identifier := Claims{"format": FormatComplex}
 	for name, member := range members {
-		identifier[name] = map[string]any(member)
+		identifier[name] = member
 	}
 	return identifier
 }

@@ -82,6 +82,13 @@ func demoConfig(transmitter *ssftest.TestTransmitter, listen string, poll bool) 
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	demo := flag.Bool("demo", false, "use the in-process test transmitter and deliver one event to yourself")
 	poll := flag.Bool("poll", false, "the poll profile: register a POLL stream and poll for events")
 	listen := flag.String("listen", ":8081", "address to listen on")
@@ -117,8 +124,7 @@ func main() {
 	// handler that revokes the access tokens
 	rcv, err := receiver.New(config, options...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -155,9 +161,9 @@ func main() {
 	}
 	log.Info("The example resource server listens", "addr", *listen, "push", rcv.PushEndpointPath(), "poll", *poll)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
 // deliverDemoEvent waits for the receiver to register its stream, then delivers one
@@ -180,7 +186,7 @@ func deliverDemoEvent(log *slog.Logger, transmitter *ssftest.TestTransmitter, ad
 		log.Info("Demo: queued a session-revoked SET for alice's session at the poll endpoint; the same curl answers 401 after the next poll")
 		return
 	}
-	request, _ := http.NewRequest(http.MethodPost, "http://"+address+path, strings.NewReader(set))
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+address+path, strings.NewReader(set))
 	request.Header.Set("Authorization", "Bearer example-resource-server-push-secret")
 	request.Header.Set("Content-Type", "application/secevent+jwt")
 	response, err := http.DefaultClient.Do(request)

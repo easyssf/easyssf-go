@@ -53,9 +53,10 @@ func NewHTTPClient(trusted *x509.Certificate, trustAll, verifyHostname bool) *ht
 		config.InsecureSkipVerify = true //nolint:gosec // a local suite with a self-signed certificate, by configuration
 	case trusted != nil && !verifyHostname:
 		config.InsecureSkipVerify = true //nolint:gosec // the certificate itself is checked below, only its host name is not
-		config.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			for _, raw := range rawCerts {
-				if certificate, err := x509.ParseCertificate(raw); err == nil && certificate.Equal(trusted) {
+		// VerifyConnection, not VerifyPeerCertificate: it runs for resumed sessions as well
+		config.VerifyConnection = func(state tls.ConnectionState) error {
+			for _, certificate := range state.PeerCertificates {
+				if certificate.Equal(trusted) {
 					return nil
 				}
 			}

@@ -57,7 +57,7 @@ func main() {
 	// localhost, not localhost.emobix.co.uk
 	var trusted *x509.Certificate
 	if file := env("CTS_SUITE_CERTIFICATE", "certs/conformance-suite.pem"); file != "" {
-		if data, err := os.ReadFile(file); err == nil {
+		if data, err := os.ReadFile(file); err == nil { //nolint:gosec // the path is the operator's own configuration
 			if block, _ := pem.Decode(data); block != nil {
 				trusted, _ = x509.ParseCertificate(block.Bytes)
 			}

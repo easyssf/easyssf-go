@@ -414,7 +414,7 @@ func (t *TestTransmitter) addStream(request ssf.Claims) ssf.Claims {
 	if ssf.StringMember(delivery, "method") == ssf.PollURI {
 		delivery["endpoint_url"] = t.PollURL()
 	}
-	stream["delivery"] = map[string]any(delivery)
+	stream["delivery"] = delivery
 	t.streams = append(t.streams, stream)
 	return copyClaims(stream)
 }
@@ -625,7 +625,7 @@ func (t *TestTransmitter) handleStreams(w http.ResponseWriter, method, streamID 
 			streams := t.Streams()
 			list := make([]any, 0, len(streams))
 			for _, stream := range streams {
-				list = append(list, map[string]any(stream))
+				list = append(list, stream)
 			}
 			body, _ := json.Marshal(list)
 			respond(w, http.StatusOK, string(body))

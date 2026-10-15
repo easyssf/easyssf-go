@@ -130,7 +130,7 @@ func reported(transmitter *ssftest.TestTransmitter, jti string) func() bool {
 
 func logMessages(run map[string]any) []string {
 	entries, _ := run["log"].([]any)
-	var messages []string
+	messages := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		messages = append(messages, ssf.StringMember(ssf.Object(entry), "message"))
 	}
@@ -247,7 +247,7 @@ func TestPushEndpointAnswersWithoutRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != 503 {
+	if response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("%d", response.StatusCode)
 	}
 	if status, _ := r.request(t, http.MethodGet, "/"); status != 200 {

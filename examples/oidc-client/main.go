@@ -39,6 +39,13 @@ func env(name, fallback string) string {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	listen := flag.String("listen", ":8082", "address to listen on")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -74,8 +81,7 @@ func main() {
 		// ends the local sessions of the subject as the event arrives
 		receiver.WithSessionTerminator(sessions))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -110,9 +116,9 @@ func main() {
 	}()
 	log.Info("The example OIDC client listens", "addr", *listen, "base_url", baseURL)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }
 
 type app struct {

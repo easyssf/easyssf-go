@@ -89,6 +89,13 @@ func build(transmitter *ssftest.TestTransmitter, config receiver.Config, demo bo
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	listen := flag.String("listen", ":8083", "address to listen on")
 	autoplay := flag.Bool("autoplay", true, "play the life of two users on startup")
 	flag.Parse()
@@ -98,8 +105,7 @@ func main() {
 	transmitter := ssftest.New()
 	application, err := build(transmitter, receiverConfig(transmitter), true, log)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -120,7 +126,7 @@ func main() {
 	}()
 	log.Info("The SCIM provisioning example listens", "addr", *listen)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }

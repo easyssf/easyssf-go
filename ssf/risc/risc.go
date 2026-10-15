@@ -77,7 +77,7 @@ var Known = []struct {
 	{SessionsRevoked, eventtypes.RiscSessionsRevoked},
 }
 
-var names = map[Kind]string{
+var names = map[Kind]string{ //nolint:gosec // G101: event type names, not credentials
 	AccountCredentialChangeRequired: "AccountCredentialChangeRequired", AccountPurged: "AccountPurged",
 	AccountDisabled: "AccountDisabled", AccountEnabled: "AccountEnabled", IdentifierChanged: "IdentifierChanged",
 	IdentifierRecycled: "IdentifierRecycled", CredentialCompromise: "CredentialCompromise", OptIn: "OptIn",

@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
-
 	"github.com/easyssf/easyssf-go/ssf"
 	"github.com/easyssf/easyssf-go/ssf/eventtypes"
 )
@@ -295,7 +293,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	verifierOptions.AcceptedAlgorithms = nil
 	for _, algorithm := range config.EffectiveAcceptedAlgorithms() {
 		supported, _ := SupportedAlgorithm(algorithm)
-		verifierOptions.AcceptedAlgorithms = append(verifierOptions.AcceptedAlgorithms, jose.SignatureAlgorithm(supported))
+		verifierOptions.AcceptedAlgorithms = append(verifierOptions.AcceptedAlgorithms, supported)
 	}
 	if audience := strings.TrimSpace(config.ExpectedAudience); audience != "" {
 		verifierOptions.ExpectedAudiences = []string{audience}

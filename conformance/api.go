@@ -247,7 +247,10 @@ func (c *APIClient) waitForState(ctx context.Context, moduleID string, timeout t
 		case <-time.After(time.Second):
 		}
 	}
-	return nil, fmt.Errorf("timed out waiting for module %s to reach %v; last info: %v (%v)", moduleID, states, last, lastErr)
+	if lastErr != nil {
+		return nil, fmt.Errorf("timed out waiting for module %s to reach %v; last info: %v: %w", moduleID, states, last, lastErr)
+	}
+	return nil, fmt.Errorf("timed out waiting for module %s to reach %v; last info: %v", moduleID, states, last)
 }
 
 func (c *APIClient) expectJSON(ctx context.Context, method, path string, body []byte, expected int, replayable bool) (map[string]any, error) {
@@ -292,7 +295,7 @@ func (c *APIClient) send(ctx context.Context, method, path string, body []byte, 
 		response, err := c.client.Do(request)
 		if err == nil {
 			data, readErr := io.ReadAll(response.Body)
-			response.Body.Close()
+			_ = response.Body.Close()
 			cancel()
 			if readErr == nil {
 				return response.StatusCode, data, nil

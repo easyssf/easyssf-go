@@ -1,0 +1,88 @@
+# golangci-lint v2 configuration. Run with `make lint` or
+# `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...`; the
+# conformance module finds this file by walking up from its directory. Not enabled on purpose:
+# exhaustive, because caep.Kind, risc.Kind, scim.Operation and the receiver's states are open
+# enumerations that a default case handles (see AGENTS.md).
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
+    - errorlint
+    - gocritic
+    - gosec
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - sloglint
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+  settings:
+    errcheck:
+      # closing in a defer; the error of a Close after a read says nothing the read did not
+      exclude-functions:
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+          # constants are documented as "Name: what it means", the form of an enumeration
+          # ReceiverHealth and ReceiverStream stutter on purpose, Health and Stream say too little
+          arguments: [disableChecksOnConstants, disableStutteringCheck]
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: var-declaration
+        - name: var-naming
+    staticcheck:
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1001 # De Morgan rewrites make the conditions harder to read, not easier
+  exclusions:
+    rules:
+      # tests: requests without a context, bodies left to the test's end, weak keys on purpose
+      - path: _test\.go
+        linters: [noctx, bodyclose, gosec, unparam]
+      # the examples shut the receiver down with a context of their own after the signal
+      - path: ^examples/
+        linters: [contextcheck]
+
+formatters:
+  enable: [gofmt]

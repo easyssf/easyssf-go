@@ -178,14 +178,14 @@ func TestServesPushEndpointOverHTTP(t *testing.T) {
 		defer response.Body.Close()
 		return response
 	}
-	if response := post(secret, transmitter.Set("CaepSessionRevoked", alice(transmitter))); response.StatusCode != 202 || r.count.Load() != 1 {
+	if response := post(secret, transmitter.Set("CaepSessionRevoked", alice(transmitter))); response.StatusCode != http.StatusAccepted || r.count.Load() != 1 {
 		t.Fatalf("%d", response.StatusCode)
 	}
 	response := post(secret, "garbage")
-	if response.StatusCode != 400 || response.Header.Get("Content-Type") != "application/json" || response.Header.Get("Content-Language") != "en" {
+	if response.StatusCode != http.StatusBadRequest || response.Header.Get("Content-Type") != "application/json" || response.Header.Get("Content-Language") != "en" {
 		t.Fatalf("%d %v", response.StatusCode, response.Header)
 	}
-	if response, _ := http.Get(server.URL); response.StatusCode != 405 {
+	if response, _ := http.Get(server.URL); response.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatal("POST only")
 	}
 }
