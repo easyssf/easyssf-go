@@ -21,6 +21,9 @@ rcv, err := receiver.New(config,
             // end what you hold for subject.SessionID() or subject.Sub()
             return nil
         })))
+if err != nil {
+    log.Fatal(err)                                    // every configuration failure at once
+}
 rcv.Start(ctx)                                        // registers the stream, starts polling
 mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 ```
@@ -28,7 +31,7 @@ mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 | | |
 |---|---|
 | **Status** | Pre-1.0; the version follows the Java library (`0.7.0-alpha.N`), breaking changes are acceptable when the CHANGELOG says so |
-| **Go** | 1.24 or later, no cgo |
+| **Go** | 1.25 or later, no cgo |
 | **Dependencies** | `github.com/go-jose/go-jose/v4` for JWS and JWK; `modernc.org/sqlite`, `pgx` and `go-sql-driver/mysql` only for the tests of `receiver/sqlstore`; everything else is the standard library |
 | **License** | Apache-2.0 |
 
