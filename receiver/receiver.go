@@ -213,6 +213,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	issuer := strings.TrimSpace(config.TransmitterIssuer)
 	policy := config.URIPolicy()
 	timeout := r.config.HTTP.Timeout.Std()
+	retry := r.config.HTTP.Retry.Options()
 	var metadataURL *url.URL
 	if config.TransmitterMetadataURL != "" {
 		u, err := url.Parse(config.TransmitterMetadataURL)
@@ -225,15 +226,14 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	if err != nil {
 		return nil, err
 	}
-	metadata.Timeout = timeout
-	metadata.Retry = r.config.HTTP.Retry.Options()
+	metadata.Timeout, metadata.Retry = timeout, retry
 	// the configured headers go with every call, also those for metadata and keys that need no
 	// token
 	var headers Authorizer = NoAuthorization{}
 	if len(config.Headers) > 0 {
 		headers = StaticHeaders(config.Headers)
-		metadata.Authorizer = headers
 	}
+	metadata.Authorizer = headers
 	urls := make([]string, 0, len(metadata.MetadataURLs()))
 	for _, u := range metadata.MetadataURLs() {
 		urls = append(urls, u.String())
@@ -247,8 +247,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	authorizer := Authorizers{headers, BearerToken(tokens)}
 	stream := NewReceiverStream()
 	streamClient := NewStreamClient(metadata, r.client, authorizer)
-	streamClient.Timeout = timeout
-	streamClient.Retry = r.config.HTTP.Retry.Options()
+	streamClient.Timeout, streamClient.Retry = timeout, retry
 	verification := NewStreamVerification(stream.StreamID)
 	verification.Log = r.log
 
@@ -256,7 +255,8 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		StreamClient: streamClient, Stream: stream, Verification: verification, AutoStartPolling: config.Poll.AutoStartup,
 		PushAuthorizationHeader: strings.TrimSpace(config.Push.ExpectedAuthHeader)}
 
-	// the keys
+	// the keys: fetched like the metadata, with the configured headers but no token (the keys
+	// are public), retried and redirected per the same configuration
 	if config.TransmitterJWKSURL != "" {
 		u, err := url.Parse(config.TransmitterJWKSURL)
 		if err != nil {
@@ -264,7 +264,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		}
 		source := NewHTTPJWKSetSource(r.client, u)
 		source.Clock, source.Timeout = o.clock, timeout
-		source.Authorizer, source.Retry, source.Policy = metadata.Authorizer, metadata.Retry, policy
+		source.Authorizer, source.Retry, source.Policy = headers, retry, policy
 		transmitter.Keys = source
 	} else {
 		source := NewResolvedHTTPJWKSetSource(r.client, func(ctx context.Context) (*url.URL, error) {
@@ -278,7 +278,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 			return resolved.JWKSURI(), nil
 		})
 		source.Clock, source.Timeout = o.clock, timeout
-		source.Authorizer, source.Retry, source.Policy = metadata.Authorizer, metadata.Retry, policy
+		source.Authorizer, source.Retry, source.Policy = headers, retry, policy
 		transmitter.Keys = source
 	}
 
