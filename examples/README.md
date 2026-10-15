@@ -9,7 +9,7 @@ for `go run`, nothing imports them.
 | | Port | |
 |---|---|---|
 | [`keycloak/`](keycloak) | 8080 | Docker Compose setup: Keycloak 26.8 with the `ssf` feature and a pre-configured `ssf-demo` realm, the same files as in the Java and Rust repositories |
-| [`resource-server/`](resource-server) | 8081 | OAuth2 resource server on `net/http`. Rejects access tokens once their Keycloak session was revoked. Has a `-poll` profile and a `-demo` mode against the in-process test transmitter. |
+| [`resource-server/`](resource-server) | 8081 | OAuth2 resource server on `net/http`. Rejects access tokens once their Keycloak session was revoked. Has a `-poll` profile. |
 | [`oidc-client/`](oidc-client) | 8082 | Web application with OIDC login (by hand, in `oidc.go`). Ends the local session once the Keycloak session was revoked or the user's credentials changed. |
 | [`scim-provisioning/`](scim-provisioning) | 8083 | Mirrors SCIM `Users` into a local directory from SCIM Events (RFC 9967). Runs without Keycloak, see [4.](#4-scim-provisioning) |
 
@@ -95,13 +95,6 @@ msg="Received SET" jti=52e22461-… delivery=poll events=[CaepSessionRevoked]
 The `curl` commands work the same way. Keycloak keeps pushing to the PUSH stream of
 `example-resource-server` in the meantime (streams survive a restart of the application), which
 the application rejects in this profile.
-
-### Without Keycloak
-
-`go run ./examples/resource-server -demo` (also with `-poll`) runs the same application against
-the in-process test transmitter: it registers its stream there, obtains an access token for
-`alice`, prints the `curl` to call the API with it, then delivers one `session-revoked` SET for
-her session, after which the same `curl` answers 401.
 
 ## 3. OIDC client
 

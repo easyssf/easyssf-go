@@ -319,8 +319,8 @@ set, err := signer.Sign(claims)                                   // typ seceven
 ## Examples
 
 [`examples/`](examples) holds the ports of the Spring Boot examples: a resource server that rejects
-the access tokens of revoked sessions (`go run ./examples/resource-server -demo` runs it against
-the in-process test transmitter, `-poll` polls instead), an OIDC client that ends local sessions
+the access tokens of revoked sessions (`-poll` polls instead of receiving pushes), an OIDC client
+that ends local sessions
 when Keycloak reports a revoked session or changed credentials, and a SCIM provisioning
 application that mirrors SCIM `Users` from SCIM Events, with a demo service provider of its own.
 The two Keycloak applications run against [`examples/keycloak`](examples/keycloak), the Docker
@@ -357,5 +357,5 @@ manual runs against a suite of your own.
 go test -race ./...                                   # everything, in-process, no network, no Docker
 EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=... EASYSSF_MYSQL_URL=... go test ./receiver/sqlstore
 go vet ./... && gofmt -l . && make lint    # golangci-lint and govulncheck
-go run ./examples/resource-server -demo
+go run ./examples/resource-server              # against the Keycloak of examples/keycloak
 ```

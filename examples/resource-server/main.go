@@ -5,7 +5,6 @@
 //
 //	go run ./examples/resource-server          # PUSH stream of the client example-resource-server
 //	go run ./examples/resource-server -poll    # POLL stream of the client example-poll-receiver
-//	go run ./examples/resource-server -demo    # against the in-process test transmitter, no Keycloak
 //
 // KEYCLOAK_ISSUER, KEYCLOAK_CLIENT_SECRET, KEYCLOAK_POLL_CLIENT_SECRET and SSF_PUSH_URL override
 // the defaults, which fit the compose setup. The application contains no SSF code apart from the
@@ -23,14 +22,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/easyssf/easyssf-go/receiver"
-	"github.com/easyssf/easyssf-go/ssf"
 	"github.com/easyssf/easyssf-go/ssf/eventtypes"
-	"github.com/easyssf/easyssf-go/ssftest"
 )
 
 func env(name, fallback string) string {
@@ -71,16 +67,6 @@ func keycloakConfig(issuer string, poll bool) receiver.Config {
 	return config
 }
 
-// demoConfig is the same against the in-process test transmitter, which issues tokens to the
-// client of ssftest and pushes to this application on the loopback address.
-func demoConfig(transmitter *ssftest.TestTransmitter, listen string, poll bool) receiver.Config {
-	config := keycloakConfig(transmitter.Issuer(), poll)
-	config.AllowInsecureHTTP = false
-	config.Push.DeliveryEndpointURL = "http://" + listen + "/ssf/push"
-	config.OAuth2 = receiver.OAuth2Config{TokenURI: transmitter.TokenURL(), ClientID: ssftest.ClientID, ClientSecret: ssftest.ClientSecret}
-	return config
-}
-
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -89,40 +75,26 @@ func main() {
 }
 
 func run() error {
-	demo := flag.Bool("demo", false, "use the in-process test transmitter and deliver one event to yourself")
 	poll := flag.Bool("poll", false, "the poll profile: register a POLL stream and poll for events")
 	listen := flag.String("listen", ":8081", "address to listen on")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	address := *listen
-	if strings.HasPrefix(address, ":") {
-		address = "localhost" + address
-	}
+	config := keycloakConfig(env("KEYCLOAK_ISSUER", "http://localhost:8080/realms/ssf-demo"), *poll)
 
-	var config receiver.Config
-	options := []receiver.Option{receiver.WithLogger(log)}
-	var transmitter *ssftest.TestTransmitter
-	if *demo {
-		transmitter = ssftest.New()
-		config = demoConfig(transmitter, address, *poll)
-		options = append(options, receiver.WithHTTPClient(transmitter.Client))
-	} else {
-		config = keycloakConfig(env("KEYCLOAK_ISSUER", "http://localhost:8080/realms/ssf-demo"), *poll)
-	}
 	// the application's own handler, on top of the built-in revocation of access tokens: logs
 	// every event, like the AuditingSsfEventHandler of the Java example
-	options = append(options, receiver.WithHandler(receiver.HandlerFunc(func(ctx context.Context, event *receiver.Context) error {
+	audit := receiver.HandlerFunc(func(ctx context.Context, event *receiver.Context) error {
 		for _, eventType := range event.EventTypes() {
 			subject := event.SubjectFor(eventType)
 			log.Info("Security event", "event", eventtypes.AliasOf(eventType), "user", subject.Sub(), "session", subject.SessionID(),
 				"delivery", event.DeliveryMethod().String(), "idempotency-key", event.IdempotencyKey())
 		}
 		return nil
-	})))
+	})
 
 	// the receiver: the push endpoint, the stream at Keycloak, the revocation store and the
 	// handler that revokes the access tokens
-	rcv, err := receiver.New(config, options...)
+	rcv, err := receiver.New(config, receiver.WithLogger(log), receiver.WithHandler(audit))
 	if err != nil {
 		return err
 	}
@@ -156,44 +128,9 @@ func run() error {
 		defer cancel()
 		_ = server.Shutdown(shutdown)
 	}()
-	if transmitter != nil {
-		go deliverDemoEvent(log, transmitter, address, rcv.PushEndpointPath(), *poll)
-	}
 	log.Info("The example resource server listens", "addr", *listen, "push", rcv.PushEndpointPath(), "poll", *poll)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
-}
-
-// deliverDemoEvent waits for the receiver to register its stream, then delivers one
-// session-revoked SET for alice's session the way the transmitter would: pushed to the push
-// endpoint, or queued at the poll endpoint. The curl it prints presents an access token of that
-// session, which the resource server rejects from then on.
-func deliverDemoEvent(log *slog.Logger, transmitter *ssftest.TestTransmitter, address, path string, poll bool) {
-	for len(transmitter.Streams()) == 0 {
-		time.Sleep(100 * time.Millisecond)
-	}
-	accessToken := transmitter.AccessTokenFor("alice", "session-1", time.Now())
-	log.Info("Demo: alice logged in", "try", fmt.Sprintf("curl -i http://%s/api/me -H 'Authorization: Bearer %s'", address, accessToken))
-	time.Sleep(time.Second)
-	// the receiver expects the audience the transmitter assigned to the stream
-	claims := transmitter.SetClaims("CaepSessionRevoked", ssf.Complex(ssf.IssSub(transmitter.Issuer(), "alice"), ssf.Opaque("session-1")))
-	claims["aud"] = transmitter.Streams()[0]["aud"]
-	set := transmitter.SignSET(claims)
-	if poll {
-		transmitter.QueueSet(set)
-		log.Info("Demo: queued a session-revoked SET for alice's session at the poll endpoint; the same curl answers 401 after the next poll")
-		return
-	}
-	request, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+address+path, strings.NewReader(set))
-	request.Header.Set("Authorization", "Bearer example-resource-server-push-secret")
-	request.Header.Set("Content-Type", "application/secevent+jwt")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		log.Error("Demo push failed", "error", err)
-		return
-	}
-	defer response.Body.Close()
-	log.Info("Demo: pushed a session-revoked SET for alice's session; the same curl answers 401 now", "status", response.StatusCode)
 }

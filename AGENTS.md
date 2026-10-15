@@ -57,7 +57,7 @@ go test -race ./...                      # everything, in-process, no network, n
 go test ./receiver -run TestRejects      # the negative verifier tests
 go vet ./... && gofmt -l .               # CI fails on either
 make lint                                # golangci-lint (.golangci.yml, includes staticcheck) and govulncheck; CI runs both
-go run ./examples/resource-server -demo  # pushes one SET to itself through the test transmitter
+go run ./examples/resource-server        # against the Keycloak of examples/keycloak, see examples/README.md
 EASYSSF_DATABASE_TESTS=true EASYSSF_POSTGRES_URL=postgres://... EASYSSF_MYSQL_URL=user:pw@tcp(host:3306)/db go test ./receiver/sqlstore
 cd conformance && go test ./...            # the scenarios against the test transmitter, no Docker
 cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m -v .   # the suite in Docker, minutes per plan

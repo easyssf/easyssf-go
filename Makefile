@@ -1,4 +1,4 @@
-.PHONY: test test-db vet fmt lint check demo conformance
+.PHONY: test test-db vet fmt lint check conformance
 
 test:                       ## everything, in-process, no network, no Docker
 	go test -race ./...
@@ -18,9 +18,6 @@ lint:                       ## golangci-lint (includes staticcheck) and govulnch
 	cd conformance && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 	cd conformance && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-
-demo:                       ## the resource server against the in-process test transmitter
-	go run ./examples/resource-server -demo
 
 conformance:                ## the four plans of the OpenID conformance suite in Docker, minutes per plan
 	cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -count=1 -run Plan -timeout 60m -v .
