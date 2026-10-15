@@ -28,12 +28,9 @@ rcv.Start(ctx)                                        // registers the stream, s
 mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 ```
 
-| | |
-|---|---|
-| **Status** | 0.6.0, at feature parity with [easyssf 0.6.0 for Java](https://github.com/easyssf/easyssf); the version follows the Java library. Pre-1.0: breaking changes are acceptable when the CHANGELOG says so |
-| **Go** | 1.25 or later, no cgo |
-| **Dependencies** | `github.com/go-jose/go-jose/v4` for JWS and JWK; `modernc.org/sqlite`, `pgx` and `go-sql-driver/mysql` only for the tests of `receiver/sqlstore`; everything else is the standard library |
-| **License** | Apache-2.0 |
+Version 0.6.0 is at feature parity with [easyssf 0.6.0 for Java](https://github.com/easyssf/easyssf);
+the version follows the Java library, and below 1.0 a release may break the API when the
+CHANGELOG says so. Go 1.25 or later, no cgo, Apache-2.0.
 
 ## Packages
 
