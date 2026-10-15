@@ -49,7 +49,9 @@ type AccessTokens struct {
 
 var acceptedAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.PS256, jose.PS384, jose.PS512, jose.ES256, jose.ES384, jose.EdDSA}
 
-// Validate is the claims of the token, if it is valid.
+// Validate checks the token and returns its claims: signed with a key of the issuer (fetching the
+// keys again once for an unknown kid, as Keycloak rotates them), issued by the expected issuer
+// and not expired. The audience is not checked, see below.
 func (a *AccessTokens) Validate(ctx context.Context, token string) (AccessToken, error) {
 	jws, err := jose.ParseSigned(token, acceptedAlgorithms)
 	if err != nil {

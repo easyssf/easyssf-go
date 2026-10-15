@@ -332,7 +332,7 @@ func (p *Payload) Claim(name string, value any) *Payload {
 	return p
 }
 
-// Build is the payload, to pass to ssf.SETBuilder.Event.
+// Build returns the payload as claims, to pass to ssf.SETBuilder.Event.
 func (p *Payload) Build() ssf.Claims {
 	claims := make(ssf.Claims, len(p.claims))
 	for name, value := range p.claims {

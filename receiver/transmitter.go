@@ -224,7 +224,7 @@ func (r *MetadataResolver) Resolved() *ssf.TransmitterMetadata {
 	return r.metadata
 }
 
-// Resolve is the metadata, fetched on first use. Concurrent callers wait for one fetch.
+// Resolve returns the metadata, fetching it on first use. Concurrent callers wait for one fetch.
 func (r *MetadataResolver) Resolve(ctx context.Context) (*ssf.TransmitterMetadata, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
