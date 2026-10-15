@@ -308,3 +308,32 @@ func TestFailedValidationRegistersNoAliasSoALaterConfigurationMayMapItDifferentl
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestReceiverStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {
+	transmitter := ssftest.New()
+	config := receiver.DefaultConfig()
+	config.TransmitterIssuer = transmitter.Issuer()
+	config.TransmitterAccessToken = ssftest.AccessToken
+	config.Stream.Management = receiver.StreamManagementReceiver
+	config.Stream.EventsRequested = []string{"CaepSessionRevoked"}
+	config.Push.DeliveryEndpointURL = "https://app.example/ssf/push"
+	config.Push.ExpectedAuthHeader = "Bearer s3cr3t"
+	rcv, err := receiver.New(config, receiver.WithHTTPClient(transmitter.Client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := rcv.Transmitters()[0].Registrar
+	first, cancel := context.WithCancel(ctx)
+	rcv.Start(first)
+	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
+	cancel()
+	ssftest.Eventually(t, 5*time.Second, "the registrar to end", func() bool { return !registrar.IsRunning() })
+	rcv.Start(ctx)
+	if !registrar.IsRunning() {
+		t.Fatal("not started again")
+	}
+	rcv.Stop(ctx)
+	if registrar.IsRunning() {
+		t.Fatal("not stopped")
+	}
+}

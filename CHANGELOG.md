@@ -61,6 +61,9 @@ All notable changes to this project will be documented in this file. The format 
 - `ssf/eventtypes`: `CheckAlias`, the check of `RegisterAlias` without the registration.
   `Config.Validate` uses it and changes nothing any more; `receiver.New` registers the aliases
   once the whole configuration passed.
+- `receiver`: `Poller`, `StreamRegistrar` and `Receiver` clear their running state when the
+  context of `Start` is cancelled, so that `IsRunning` is accurate and `Start` works again;
+  `Stop` still sends the acknowledgements owed and deletes the streams configured for it.
 - `receiver`: `Authorizer`, what every call to the transmitter goes through: `BearerToken` over
   a `TokenProvider`, `StaticHeaders`, `EndpointHeaders` by `Endpoint` (`EndpointOf(ctx)`),
   `AuthorizerFunc` and `Authorizers` to chain them; `NewStreamClient` and `NewPoller` take one

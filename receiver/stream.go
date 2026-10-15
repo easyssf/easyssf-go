@@ -614,7 +614,8 @@ func (r *StreamRegistrar) IsRunning() bool {
 }
 
 // Start starts looking up or registering the stream in the background; it returns at once.
-// Cancelling ctx or calling Stop ends the retries. Calling it again while running has no effect.
+// Cancelling ctx or calling Stop ends the retries. Calling it again while running has no
+// effect; once the retries ended, because ctx was cancelled, Start starts them again.
 func (r *StreamRegistrar) Start(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -653,6 +654,15 @@ func (r *StreamRegistrar) log() *slog.Logger { return orDiscard(r.Log) }
 
 func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	// the goroutine clears its own state when the context of Start ends, so that IsRunning
+	// tells the truth and Start works again; not when Stop took the state already
+	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.done == done {
+			r.cancel, r.done = nil, nil
+		}
+	}()
 	delay := r.InitialRetryDelay
 	if delay <= 0 {
 		delay = time.Second

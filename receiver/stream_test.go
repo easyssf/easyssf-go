@@ -3,6 +3,7 @@ package receiver_test
 // SsfStreamManagementTests and SsfStreamVerificationTests of the Java library.
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"strings"
@@ -414,4 +415,23 @@ func TestProcessorRejectsInvalidVerificationEventWithoutHandlingOrRememberingIt(
 	if _, err := p.Process(ctx, set, ssf.Push); err != nil || r.count.Load() != 1 {
 		t.Fatal(err)
 	}
+}
+
+func TestRegistrarStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetAvailable(false)
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(streamClient(t, transmitter), stream, pushStream("CaepSessionRevoked"))
+	registrar.InitialRetryDelay = 10 * time.Millisecond
+	first, cancel := context.WithCancel(ctx)
+	registrar.Start(first)
+	if !registrar.IsRunning() {
+		t.Fatal("not running")
+	}
+	cancel()
+	ssftest.Eventually(t, 5*time.Second, "the registrar to end", func() bool { return !registrar.IsRunning() })
+	transmitter.SetAvailable(true)
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
+	registrar.Stop(ctx)
 }

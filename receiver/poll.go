@@ -306,7 +306,7 @@ func (p *Poller) IsLongPolling() bool { return p.options.LongPollingHold > 0 }
 // Start starts polling the transmitter in a goroutine of its own: periodically, or with one
 // request always outstanding when long polling, until ctx is cancelled or Stop is called.
 // Without it, SETs are only fetched by calling PollNow. Calling it again while running has no
-// effect.
+// effect; once the goroutine ended, because ctx was cancelled, Start starts it again.
 func (p *Poller) Start(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -320,19 +320,19 @@ func (p *Poller) Start(ctx context.Context) {
 
 // Stop stops polling: ends the polling goroutine, cancelling an outstanding long poll, and
 // sends the pending acknowledgements with a last request (with ctx) unless FlushOnStop says
-// otherwise.
+// otherwise. The acknowledgements are sent also when the goroutine ended before, because the
+// context of Start was cancelled.
 func (p *Poller) Stop(ctx context.Context) {
 	p.mu.Lock()
 	cancel, done := p.cancel, p.done
 	p.cancel, p.done = nil, nil
 	p.mu.Unlock()
-	if cancel == nil {
-		return
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
+	if cancel != nil {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
 	}
 	if p.options.FlushOnStop {
 		p.flushAcks(ctx)
@@ -422,6 +422,15 @@ func (p *Poller) PollNow(ctx context.Context) (int, error) {
 
 func (p *Poller) run(ctx context.Context, done chan struct{}) {
 	defer close(done)
+	// the goroutine clears its own state when the context of Start ends, so that IsRunning
+	// tells the truth and Start works again; not when Stop took the state already
+	defer func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.done == done {
+			p.cancel, p.done = nil, nil
+		}
+	}()
 	options := p.options
 	if options.InitialDelay > 0 {
 		select {

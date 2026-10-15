@@ -36,6 +36,7 @@ type Receiver struct {
 	metrics      Metrics
 	mu           sync.Mutex
 	started      bool
+	startCtx     context.Context
 }
 
 // Option customizes a Receiver under construction.
@@ -494,14 +495,16 @@ func (r *Receiver) PollAckStore() PollAckStore { return r.acks }
 func (r *Receiver) Metrics() Metrics { return r.metrics }
 
 // Start registers the streams and starts polling in the background, for every transmitter
-// configured for it; it returns at once. Cancelling ctx or calling Stop ends the work.
+// configured for it; it returns at once. Cancelling ctx or calling Stop ends the work; after
+// either, Start starts it again. Stop after a cancelled ctx still sends the acknowledgements
+// owed and deletes the streams configured for it, with its own ctx.
 func (r *Receiver) Start(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.started {
+	if r.started && r.startCtx.Err() == nil {
 		return
 	}
-	r.started = true
+	r.started, r.startCtx = true, ctx
 	names := make([]string, 0, len(r.transmitters))
 	for _, transmitter := range r.transmitters {
 		transmitter.Start(ctx)
@@ -518,7 +521,7 @@ func (r *Receiver) Stop(ctx context.Context) {
 	if !r.started {
 		return
 	}
-	r.started = false
+	r.started, r.startCtx = false, nil
 	for _, transmitter := range r.transmitters {
 		transmitter.Stop(ctx)
 	}

@@ -545,6 +545,26 @@ func TestInMemoryPollAckStoreKeepsAcknowledgementsAndErrorsInOrderPerIssuer(t *t
 	_ = store.Remove(ctx, "unknown", []string{"1"})
 }
 
+func TestPollerStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {
+	transmitter := ssftest.New()
+	p := poller(t, transmitter, &recorder{})
+	first, cancel := context.WithCancel(ctx)
+	p.Start(first)
+	if !p.IsRunning() {
+		t.Fatal("not running")
+	}
+	cancel()
+	ssftest.Eventually(t, 5*time.Second, "the poller to end", func() bool { return !p.IsRunning() })
+	p.Start(ctx)
+	if !p.IsRunning() {
+		t.Fatal("not started again")
+	}
+	p.Stop(ctx)
+	if p.IsRunning() {
+		t.Fatal("not stopped")
+	}
+}
+
 func TestPollerRefusesPollEndpointThePolicyForbids(t *testing.T) {
 	transmitter := ssftest.New()
 	insecure, _ := url.Parse("http://transmitter.example/realms/test/ssf/poll")
