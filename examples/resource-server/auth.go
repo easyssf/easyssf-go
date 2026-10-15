@@ -13,10 +13,11 @@ import (
 	"github.com/easyssf/easyssf-go/ssf"
 )
 
-// Validates the access tokens of Keycloak, the part Spring Security's resource server support
-// plays in the Java example: the signature against the keys of the issuer, iss and exp. Keycloak
-// signs access tokens and SETs with the same keys, so the JWKSetSource of the receiver's
-// transmitter is reused; it refreshes the keys when a token names one it does not know. The
+// Validates the access tokens of the identity provider, the part Spring Security's resource
+// server support plays in the Java example: the signature against the keys of the issuer, iss
+// and exp. The identity provider is the SSF transmitter and signs access tokens and SETs with
+// the same keys, so the JWKSetSource of the receiver's transmitter is reused; it refreshes the
+// keys when a token names one it does not know. The
 // claims are left on the request for the handlers and for the revocation middleware of the
 // receiver, which reads iss, sub, sid and iat from them.
 
@@ -50,7 +51,7 @@ type AccessTokens struct {
 var acceptedAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.PS256, jose.PS384, jose.PS512, jose.ES256, jose.ES384, jose.EdDSA}
 
 // Validate checks the token and returns its claims: signed with a key of the issuer (fetching the
-// keys again once for an unknown kid, as Keycloak rotates them), issued by the expected issuer
+// keys again once for an unknown kid, as identity providers rotate them), issued by the expected issuer
 // and not expired. The audience is not checked, see below.
 func (a *AccessTokens) Validate(ctx context.Context, token string) (AccessToken, error) {
 	jws, err := jose.ParseSigned(token, acceptedAlgorithms)
@@ -63,7 +64,7 @@ func (a *AccessTokens) Validate(ctx context.Context, token string) (AccessToken,
 		return nil, err
 	}
 	if len(keys.Key(kid)) == 0 {
-		// Keycloak rotates its keys: fetch them again, rate limited by the source
+		// the identity provider rotated its keys: fetch them again, rate limited by the source
 		if keys, err = a.keys.JWKSet(ctx, true); err != nil {
 			return nil, err
 		}
@@ -84,8 +85,8 @@ func (a *AccessTokens) Validate(ctx context.Context, token string) (AccessToken,
 	if ssf.StringMember(claims, "iss") != a.issuer {
 		return nil, errWrongIssuer
 	}
-	// the access tokens of Keycloak carry the audience 'account' unless a mapper adds one, so
-	// the audience is not checked
+	// which audience an access token carries depends on the identity provider and its
+	// configuration, so this example does not check it; a real resource server does
 	if exp, ok := ssf.Int64(claims["exp"]); !ok || time.Now().Unix() > exp+30 {
 		return nil, errExpired
 	}

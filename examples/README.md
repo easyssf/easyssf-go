@@ -73,9 +73,11 @@ msg="Security event" event=CaepSessionRevoked user=33bf4f70-… session=hPB29fvO
 ```
 
 `GET /health` is the health of the receiver: its transmitter, stream and, with `-poll`, the poller
-(503 when unhealthy). `KEYCLOAK_ISSUER`, `KEYCLOAK_CLIENT_SECRET` and `SSF_PUSH_URL` override the
-defaults; `SSF_PUSH_URL` is how Keycloak in Docker reaches the application and must be allowed by
-`ssf.validPushUrls` of the client.
+(503 when unhealthy). The application works with any SSF transmitter that sends CAEP
+`session-revoked` events and is the issuer of the access tokens: `SSF_TRANSMITTER_ISSUER`,
+`SSF_TOKEN_URI`, `SSF_CLIENT_ID`, `SSF_CLIENT_SECRET` and `SSF_PUSH_URL` override the defaults,
+which are the clients of the `ssf-demo` realm. `SSF_PUSH_URL` is how the transmitter reaches the
+application; for Keycloak in Docker it must be allowed by `ssf.validPushUrls` of the client.
 
 ### POLL delivery
 
