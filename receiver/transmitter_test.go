@@ -3,6 +3,9 @@ package receiver_test
 // SsfTransmittersTests and SsfTransmitterTests of the Java library.
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -222,6 +225,92 @@ func TestClientCredentialsTokenIsCachedUntilShortlyBeforeItExpires(t *testing.T)
 	}
 	wrong := receiver.NewClientCredentialsTokenProvider(test.Client, tokenURL, ssftest.ClientID, "nope", options)
 	if _, err := wrong.AccessToken(ctx); !receiver.IsTransmitterUnavailable(err) {
+		t.Fatalf("%v", err)
+	}
+}
+
+// redirecting answers requests under /redirect/ with a 302 to the location the query names,
+// relative to the transmitter's host unless absolute; everything else goes to the transmitter.
+type redirecting struct {
+	next http.RoundTripper
+}
+
+func (r *redirecting) RoundTrip(request *http.Request) (*http.Response, error) {
+	if !strings.HasPrefix(request.URL.Path, "/redirect/") {
+		return r.next.RoundTrip(request)
+	}
+	location := request.URL.Query().Get("to")
+	header := http.Header{"Location": []string{location}}
+	return &http.Response{StatusCode: http.StatusFound, Header: header, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+}
+
+func redirectingResolver(t *testing.T, transmitter *ssftest.TestTransmitter, to string, policy receiver.URIPolicy) *receiver.MetadataResolver {
+	t.Helper()
+	client := &http.Client{Transport: &redirecting{next: transmitter.Client.Transport}}
+	metadataURL, _ := url.Parse("https://transmitter.example/redirect/metadata?to=" + url.QueryEscape(to))
+	resolver, err := receiver.NewMetadataResolver(transmitter.Issuer(), metadataURL, client, policy, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolver
+}
+
+func TestFollowsRedirectToTheSameHostOverHTTPS(t *testing.T) {
+	transmitter := ssftest.New()
+	resolver := redirectingResolver(t, transmitter, "https://transmitter.example/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{})
+	metadata, err := resolver.Resolve(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Issuer() != transmitter.Issuer() {
+		t.Fatal(metadata.Issuer())
+	}
+}
+
+func TestRefusesRedirectFromHTTPSToHTTP(t *testing.T) {
+	transmitter := ssftest.New()
+	resolver := redirectingResolver(t, transmitter, "http://transmitter.example/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{})
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRefusesRedirectToAnotherHost(t *testing.T) {
+	transmitter := ssftest.New()
+	resolver := redirectingResolver(t, transmitter, "https://other.example/.well-known/ssf-configuration/realms/test", receiver.URIPolicy{AllowInsecureHTTP: true})
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "another host") {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRedirectCheckIgnoresTheClientsOwnPolicy(t *testing.T) {
+	transmitter := ssftest.New()
+	client := &http.Client{Transport: &redirecting{next: transmitter.Client.Transport},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return nil }}
+	metadataURL, _ := url.Parse("https://transmitter.example/redirect/metadata?to=" + url.QueryEscape("http://transmitter.example/.well-known/ssf-configuration/realms/test"))
+	resolver, err := receiver.NewMetadataResolver(transmitter.Issuer(), metadataURL, client, receiver.URIPolicy{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
+		t.Fatalf("%v", err)
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("the caller's client was changed")
+	}
+}
+
+func TestStreamManagementCallsRefuseRedirectToHTTP(t *testing.T) {
+	transmitter := ssftest.New()
+	client := &http.Client{Transport: &redirecting{next: transmitter.Client.Transport}}
+	// the configuration endpoint of the metadata redirects to http
+	configurationEndpoint := "https://transmitter.example/redirect/streams?to=" + url.QueryEscape("http://transmitter.example/realms/test/ssf/streams")
+	metadata, _ := json.Marshal(map[string]any{"issuer": transmitter.Issuer(), "jwks_uri": transmitter.JWKSURL(),
+		"spec_version": ssf.SpecVersion1_0, "delivery_methods_supported": []string{ssf.PushURI}, "configuration_endpoint": configurationEndpoint})
+	transmitter.PublishDocument("/.well-known/ssf-configuration/realms/test", string(metadata))
+	resolver, _ := receiver.NewMetadataResolver(transmitter.Issuer(), nil, client, receiver.URIPolicy{}, nil)
+	streams := receiver.NewStreamClient(resolver, client, receiver.FixedToken(ssftest.AccessToken))
+	if _, err := streams.Streams(ctx); err == nil || !strings.Contains(err.Error(), "redirect target") {
 		t.Fatalf("%v", err)
 	}
 }

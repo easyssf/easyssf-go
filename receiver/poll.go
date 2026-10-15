@@ -140,6 +140,9 @@ type PollerOptions struct {
 	// AckStore keeps the acknowledgements until a poll request carried them; an
 	// InMemoryPollAckStore by default.
 	AckStore PollAckStore
+	// Policy checks the poll endpoint of the stream and decides which redirects are followed;
+	// the strict one (https, or http on loopback) by default.
+	Policy URIPolicy
 	// MaxAckBatch is the most acknowledgements and error reports one request carries, the rest
 	// goes with the next one; 1000 by default.
 	MaxAckBatch int
@@ -488,6 +491,11 @@ func (p *Poller) poll(ctx context.Context, hold bool) (pollResult, error) {
 		p.log.Debug("Not polling, the poll endpoint of the SSF stream is not known yet")
 		return pollResult{skipped: true, endpointUnknown: true}, nil
 	}
+	// the endpoint of a registered stream comes from the transmitter: checked like a configured
+	// one, the receiver's token must not go to http
+	if err := p.options.Policy.CheckEndpoint(endpoint, "the poll endpoint of the SSF stream"); err != nil {
+		return pollResult{}, err
+	}
 	if until := p.PausedUntil(); !until.IsZero() {
 		p.log.Debug("Not polling, the SSF transmitter asked to wait", "until", until)
 		return pollResult{skipped: true}, nil
@@ -610,7 +618,7 @@ func (p *Poller) request(ctx context.Context, endpoint *url.URL, key string, max
 	}
 	started := time.Now()
 	// not retried: the poller has its interval, and a 429 or 503 pauses it below
-	response, err := exchange(WithEndpoint(ctx, EndpointPoll), p.client, p.authorizer, RetryOptions{}, timeout, http.MethodPost, endpoint, jsonBody)
+	response, err := exchange(WithEndpoint(ctx, EndpointPoll), p.client, p.authorizer, p.options.Policy, RetryOptions{}, timeout, http.MethodPost, endpoint, jsonBody)
 	if err != nil {
 		options.Metrics.PollCompleted(options.Transmitter, time.Since(started), false)
 		return nil, &PollError{Message: fmt.Sprintf("Poll request to %s failed", endpoint), Cause: err}

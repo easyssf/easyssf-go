@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,6 +63,30 @@ func (p URIPolicy) CheckIssuer(issuer string) (*url.URL, error) {
 		return nil, fmt.Errorf("transmitter issuer must not have a query or fragment: %s", issuer)
 	}
 	return u, p.checkScheme(u, "transmitter issuer")
+}
+
+// CheckRedirect decides whether a redirect of a call to the transmitter is followed: only to the
+// same host as the request that was redirected (credentials and headers must not leave the
+// transmitter), only where the scheme passes the policy (an https endpoint may not send the
+// receiver to http), and at most 10 times. Every call to a transmitter applies it, whatever
+// the http.Client's own CheckRedirect.
+func (p URIPolicy) CheckRedirect(target *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("the SSF transmitter redirected more than 10 times")
+	}
+	original := via[0].URL
+	if !strings.EqualFold(target.URL.Hostname(), original.Hostname()) {
+		return fmt.Errorf("the SSF transmitter redirected %s to another host, %s, which is not followed", original, target.URL)
+	}
+	return p.CheckEndpoint(target.URL, "the redirect target of "+original.String())
+}
+
+// redirecting is the client with the policy's CheckRedirect, a shallow copy so that the
+// caller's client is left alone.
+func (p URIPolicy) redirecting(client *http.Client) *http.Client {
+	copied := *orDefault(client)
+	copied.CheckRedirect = p.CheckRedirect
+	return &copied
 }
 
 // CheckEndpoint checks an endpoint of the transmitter: its metadata, JWK Set, stream management
@@ -166,6 +191,10 @@ func NewMetadataResolver(issuer string, metadataURL *url.URL, client *http.Clien
 // Issuer is the issuer of the transmitter.
 func (r *MetadataResolver) Issuer() string { return r.issuer }
 
+// Policy is the URI policy the resolver checks the metadata locations, the endpoints and the
+// redirects with.
+func (r *MetadataResolver) Policy() URIPolicy { return r.policy }
+
 // MetadataURLs are the locations the metadata is looked up at, in order.
 func (r *MetadataResolver) MetadataURLs() []*url.URL { return r.urls }
 
@@ -198,7 +227,7 @@ func (r *MetadataResolver) Resolve(ctx context.Context) (*ssf.TransmitterMetadat
 }
 
 func (r *MetadataResolver) fetch(ctx context.Context, u *url.URL) (*ssf.TransmitterMetadata, error) {
-	body, err := getJSON(WithEndpoint(ctx, EndpointMetadata), r.client, r.Authorizer, r.Retry, r.Timeout, u, "application/json")
+	body, err := getJSON(WithEndpoint(ctx, EndpointMetadata), r.client, r.Authorizer, r.policy, r.Retry, r.Timeout, u, "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -265,11 +294,13 @@ func (r *httpResponse) successful() bool { return r.status >= 200 && r.status < 
 // send performs one request, authorized by authorizer if not nil, and returns the response
 // whatever its status; an error means no response was received. The body is bounded by
 // maxResponseSize. The request waits timeout (DefaultHTTPTimeout if zero) unless ctx has an
-// earlier deadline.
-func send(ctx context.Context, client *http.Client, authorizer Authorizer, timeout time.Duration, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
+// earlier deadline. A redirect is followed only to the same host and only where policy allows,
+// see URIPolicy.CheckRedirect.
+func send(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, timeout time.Duration, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
 	if timeout <= 0 {
 		timeout = DefaultHTTPTimeout
 	}
+	client = policy.redirecting(client)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var reader io.Reader
@@ -301,9 +332,9 @@ func send(ctx context.Context, client *http.Client, authorizer Authorizer, timeo
 }
 
 // getJSON performs a GET, tried again per retry, and returns the body of a 2xx response.
-func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, retry RetryOptions, timeout time.Duration, u *url.URL, accept string) ([]byte, error) {
+func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, u *url.URL, accept string) ([]byte, error) {
 	response, err := retrying(ctx, retry, func(ctx context.Context) (*httpResponse, error) {
-		return send(ctx, client, authorizer, timeout, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
+		return send(ctx, client, authorizer, policy, timeout, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
 	})
 	if err != nil {
 		return nil, err
@@ -319,13 +350,13 @@ func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, re
 // 401 and the authorizer can invalidate its token: the access token expired or was revoked. The
 // response comes back whatever its status; an error means the request could not be authorized
 // or no response was received.
-func exchange(ctx context.Context, client *http.Client, authorizer Authorizer, retry RetryOptions, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
+func exchange(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
 	headers := map[string]string{"Accept": "application/json"}
 	if jsonBody != nil {
 		headers["Content-Type"] = "application/json"
 	}
 	call := func(ctx context.Context) (*httpResponse, error) {
-		return send(ctx, client, authorizer, timeout, method, u, headers, jsonBody)
+		return send(ctx, client, authorizer, policy, timeout, method, u, headers, jsonBody)
 	}
 	response, err := retrying(ctx, retry, call)
 	if err != nil {
@@ -383,6 +414,9 @@ type ClientCredentialsOptions struct {
 	// AdditionalParameters are form parameters to send with the token request in addition to
 	// the grant, for extensions of the token endpoint; grant_type and scope are not replaced.
 	AdditionalParameters map[string]string
+	// Policy decides which redirects of the token endpoint are followed; the strict one (https,
+	// or http on loopback) by default.
+	Policy URIPolicy
 	// Timeout is how long the token request waits; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
 	// Clock is the clock the expiry is measured by.
@@ -458,7 +492,7 @@ func (p *ClientCredentialsTokenProvider) requestToken(ctx context.Context) (stri
 	} else {
 		headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(p.clientID)+":"+url.QueryEscape(p.clientSecret)))
 	}
-	response, err := send(WithEndpoint(ctx, EndpointToken), p.client, nil, p.options.Timeout, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
+	response, err := send(WithEndpoint(ctx, EndpointToken), p.client, nil, p.options.Policy, p.options.Timeout, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
 	if err != nil {
 		return "", time.Time{}, Unavailable(err, "could not obtain an access token for the SSF transmitter from %s", p.tokenURL)
 	}

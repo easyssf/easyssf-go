@@ -51,6 +51,9 @@ type HTTPJWKSetSource struct {
 	Authorizer Authorizer
 	// Retry says how a failed fetch is tried again; not at all if zero.
 	Retry RetryOptions
+	// Policy decides which redirects of the JWK Set URL are followed; the strict one (https, or
+	// http on loopback) by default.
+	Policy URIPolicy
 
 	client  *http.Client
 	fixed   *url.URL
@@ -103,7 +106,7 @@ func (s *HTTPJWKSetSource) JWKSet(ctx context.Context, refresh bool) (*jose.JSON
 			s.url = u
 		}
 	}
-	body, err := getJSON(WithEndpoint(ctx, EndpointJWKS), s.client, s.Authorizer, s.Retry, s.Timeout, s.url, "application/jwk-set+json, application/json")
+	body, err := getJSON(WithEndpoint(ctx, EndpointJWKS), s.client, s.Authorizer, s.Policy, s.Retry, s.Timeout, s.url, "application/jwk-set+json, application/json")
 	if err != nil {
 		return nil, Unavailable(err, "could not retrieve the keys to verify the SET from %s", s.url)
 	}

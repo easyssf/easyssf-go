@@ -255,7 +255,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		}
 		source := NewHTTPJWKSetSource(r.client, u)
 		source.Clock, source.Timeout = o.clock, timeout
-		source.Authorizer, source.Retry = metadata.Authorizer, metadata.Retry
+		source.Authorizer, source.Retry, source.Policy = metadata.Authorizer, metadata.Retry, policy
 		transmitter.Keys = source
 	} else {
 		source := NewResolvedHTTPJWKSetSource(r.client, func(ctx context.Context) (*url.URL, error) {
@@ -269,7 +269,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 			return resolved.JWKSURI(), nil
 		})
 		source.Clock, source.Timeout = o.clock, timeout
-		source.Authorizer, source.Retry = metadata.Authorizer, metadata.Retry
+		source.Authorizer, source.Retry, source.Policy = metadata.Authorizer, metadata.Retry, policy
 		transmitter.Keys = source
 	}
 
@@ -337,6 +337,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		pollerOptions.RateLimitFallback = poll.RateLimit.FallbackBackoff.Std()
 		pollerOptions.MaxPause = poll.RateLimit.MaxBackoff.Std()
 		pollerOptions.Timeout = timeout
+		pollerOptions.Policy = policy
 		pollerOptions.Clock = o.clock
 		pollerOptions.Log = r.log
 		var endpoint PollEndpoint
@@ -366,6 +367,7 @@ func (r *Receiver) tokenProvider(config TransmitterConfig, timeout time.Duration
 		return NoToken{} // the validation reported it
 	}
 	options := DefaultClientCredentialsOptions()
+	options.Policy = config.URIPolicy()
 	options.Scopes = config.OAuth2.Scopes
 	options.AuthenticateWithRequestBody, _ = config.OAuth2.AuthenticatesWithRequestBody()
 	options.ExpirySafetyWindow = config.OAuth2.ExpirySafetyWindow.Std()

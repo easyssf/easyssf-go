@@ -580,6 +580,8 @@ func (t *TransmitterConfig) Validate(name string) []string {
 	for _, endpoint := range []struct{ key, value, description string }{
 		{"transmitter-metadata-url", t.TransmitterMetadataURL, "transmitter metadata URL"},
 		{"transmitter-jwks-url", t.TransmitterJWKSURL, "the JWK Set URL"},
+		{"oauth2.token-uri", t.OAuth2.TokenURI, "the token endpoint"},
+		{"poll.endpoint-url", t.Poll.EndpointURL, "the poll endpoint"},
 	} {
 		if endpoint.value == "" {
 			continue

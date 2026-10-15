@@ -139,8 +139,9 @@ cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m 
   its `TokenProvider` plus `easyssf.receiver.headers`; the endpoint is in the context,
   `EndpointOf`), retries per `RetryOptions` on connection errors and 408/429/5xx (not for poll
   requests), and one more try with a new token after a 401 when the authorizer implements
-  `TokenInvalidator`. The default client has no `Timeout` of its own, so that a long poll can
-  outlast the other calls.
+  `TokenInvalidator`. Redirects go through `URIPolicy.CheckRedirect` on a shallow copy of the
+  client: same host only, scheme per policy. The default client has no `Timeout` of its own, so
+  that a long poll can outlast the other calls.
 - **`Transmitter` is a plain struct with exported fields** that `Receiver.New` fills from the
   configuration and `WithTransmitterCustomizer` may replace; the Rust builder and the .NET
   factory in one. `Receiver` keeps them in configuration order, `default` first.

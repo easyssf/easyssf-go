@@ -290,7 +290,7 @@ func (c *StreamClient) exchange(ctx context.Context, method string, u *url.URL, 
 	if body != nil {
 		jsonBody, _ = json.Marshal(body)
 	}
-	response, err := exchange(ctx, c.client, c.authorizer, c.Retry, c.Timeout, method, u, jsonBody)
+	response, err := exchange(ctx, c.client, c.authorizer, c.metadata.Policy(), c.Retry, c.Timeout, method, u, jsonBody)
 	if err != nil {
 		return nil, streamCall(0, err, "%s %s failed", method, u)
 	}

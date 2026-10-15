@@ -544,3 +544,12 @@ func TestInMemoryPollAckStoreKeepsAcknowledgementsAndErrorsInOrderPerIssuer(t *t
 	}
 	_ = store.Remove(ctx, "unknown", []string{"1"})
 }
+
+func TestPollerRefusesPollEndpointThePolicyForbids(t *testing.T) {
+	transmitter := ssftest.New()
+	insecure, _ := url.Parse("http://transmitter.example/realms/test/ssf/poll")
+	p := receiver.NewPoller(transmitter.Client, receiver.FixedToken(ssftest.AccessToken), receiver.FixedPollEndpoint(insecure), processor(t, transmitter, &recorder{}), pollerOptions())
+	if _, err := p.PollNow(ctx); err == nil || !strings.Contains(err.Error(), "https") {
+		t.Fatalf("%v", err)
+	}
+}
