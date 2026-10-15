@@ -486,7 +486,7 @@ func (c *Config) Validate() error {
 		failures = append(failures, fmt.Sprintf("%s.push.endpoint-path: The path of the push endpoint must start with '/' (value: '%s')", ConfigurationSection, path))
 	}
 	for alias, uri := range c.EventAliases {
-		if err := eventtypes.RegisterAlias(alias, uri); err != nil {
+		if err := eventtypes.CheckAlias(alias, uri); err != nil {
 			failures = append(failures, fmt.Sprintf("%s.event-aliases.%s: %v", ConfigurationSection, alias, err))
 		}
 	}

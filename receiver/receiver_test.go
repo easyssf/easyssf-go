@@ -59,8 +59,14 @@ func TestConfigBindsFromJSONWithDefaultsAndKebabCaseKeys(t *testing.T) {
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	if eventtypes.Resolve("AcmeLoginCfg") != "AcmeLoginCfg" {
+		t.Fatal("Validate registers nothing")
+	}
+	if _, err := receiver.New(config); err != nil {
+		t.Fatal(err)
+	}
 	if eventtypes.Resolve("AcmeLoginCfg") != "https://events.acme.example/login" {
-		t.Fatal("alias registered")
+		t.Fatal("New registers the aliases")
 	}
 	if names := config.TransmitterNames(); len(names) != 2 || names[0] != "default" || names[1] != "okta" {
 		t.Fatalf("%v", names)
@@ -268,5 +274,37 @@ func TestUserAgentIsSentWhenConfigured(t *testing.T) {
 	rcv.PushHandler().Handle(ctx, secret, []byte(transmitter.Set("CaepSessionRevoked", alice(transmitter))))
 	if transmitter.LastUserAgent() != "my-app/1.0" {
 		t.Fatalf("%q", transmitter.LastUserAgent())
+	}
+}
+
+func TestFailedValidationRegistersNoAliasSoALaterConfigurationMayMapItDifferently(t *testing.T) {
+	invalid := receiver.DefaultConfig()
+	invalid.TransmitterIssuer = "https://idp.example"
+	invalid.ExpectedAudience = "app"
+	invalid.EventAliases = map[string]string{"PurityTestAlias": "urn:acme:a"}
+	invalid.Push.EndpointPath = "no-slash"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("invalid")
+	}
+	if eventtypes.Resolve("PurityTestAlias") != "PurityTestAlias" {
+		t.Fatal("a failed validation registered the alias")
+	}
+	later := receiver.DefaultConfig()
+	later.TransmitterIssuer = "https://idp.example"
+	later.ExpectedAudience = "app"
+	later.EventAliases = map[string]string{"PurityTestAlias": "urn:acme:b"}
+	if err := later.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if eventtypes.Resolve("PurityTestAlias") != "PurityTestAlias" {
+		t.Fatal("a passed validation registered the alias")
+	}
+	if err := eventtypes.RegisterAlias("PurityTestAlias", "urn:acme:b"); err != nil {
+		t.Fatal(err)
+	}
+	conflicting := later
+	conflicting.EventAliases = map[string]string{"PurityTestAlias": "urn:acme:c"}
+	if err := conflicting.Validate(); err == nil || !strings.Contains(err.Error(), "event-aliases.PurityTestAlias") {
+		t.Fatalf("%v", err)
 	}
 }

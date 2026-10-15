@@ -142,6 +142,9 @@ cd conformance && EASYSSF_CONFORMANCE_TESTS=true go test -run Plan -timeout 60m 
   `TokenInvalidator`. Redirects go through `URIPolicy.CheckRedirect` on a shallow copy of the
   client: same host only, scheme per policy. The default client has no `Timeout` of its own, so
   that a long poll can outlast the other calls.
+- **`Config.Validate` is pure.** It reports, it changes nothing: aliases are checked with
+  `eventtypes.CheckAlias` and registered by `receiver.New` after the whole configuration
+  passed. Keep it that way, a failed validation must not leave anything behind in the process.
 - **`Transmitter` is a plain struct with exported fields** that `Receiver.New` fills from the
   configuration and `WithTransmitterCustomizer` may replace; the Rust builder and the .NET
   factory in one. `Receiver` keeps them in configuration order, `default` first.

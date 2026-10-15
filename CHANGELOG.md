@@ -58,6 +58,9 @@ All notable changes to this project will be documented in this file. The format 
   `http.Client`'s own `CheckRedirect`; an https endpoint cannot send the receiver and its
   credentials to http or elsewhere. The poll endpoint of a registered stream, `oauth2.token-uri`
   and `poll.endpoint-url` are checked against the policy like the other endpoints.
+- `ssf/eventtypes`: `CheckAlias`, the check of `RegisterAlias` without the registration.
+  `Config.Validate` uses it and changes nothing any more; `receiver.New` registers the aliases
+  once the whole configuration passed.
 - `receiver`: `Authorizer`, what every call to the transmitter goes through: `BearerToken` over
   a `TokenProvider`, `StaticHeaders`, `EndpointHeaders` by `Endpoint` (`EndpointOf(ctx)`),
   `AuthorizerFunc` and `Authorizers` to chain them; `NewStreamClient` and `NewPoller` take one

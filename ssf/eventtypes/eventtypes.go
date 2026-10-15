@@ -137,20 +137,37 @@ func init() {
 // It fails if the alias is not a name without ':' or '/', the URI is not an absolute URI, or the
 // alias is already mapped to another URI.
 func RegisterAlias(alias, uri string) error {
+	registry.Lock()
+	defer registry.Unlock()
+	if err := checkAlias(alias, uri); err != nil {
+		return err
+	}
+	registry.uriByAlias[alias] = uri
+	if _, ok := registry.aliasByURI[uri]; !ok {
+		registry.aliasByURI[uri] = alias
+	}
+	return nil
+}
+
+// CheckAlias reports whether RegisterAlias would accept the alias, without registering it: the
+// alias is a name without ':' or '/', the URI absolute, and the alias is not mapped to another
+// URI already. For validating a configuration before anything of it takes effect.
+func CheckAlias(alias, uri string) error {
+	registry.RLock()
+	defer registry.RUnlock()
+	return checkAlias(alias, uri)
+}
+
+// checkAlias is CheckAlias with the registry locked by the caller.
+func checkAlias(alias, uri string) error {
 	if strings.TrimSpace(alias) == "" || strings.ContainsAny(alias, ":/") || alias != strings.TrimSpace(alias) {
 		return fmt.Errorf("an event type alias must be a name without ':' or '/' and surrounding whitespace: %q", alias)
 	}
 	if strings.TrimSpace(uri) == "" || !strings.Contains(uri, ":") || uri != strings.TrimSpace(uri) {
 		return fmt.Errorf("an event type must be an absolute URI: %q", uri)
 	}
-	registry.Lock()
-	defer registry.Unlock()
 	if existing, ok := registry.uriByAlias[alias]; ok && existing != uri {
 		return fmt.Errorf("the event type alias %q is already mapped to %s, not to %s", alias, existing, uri)
-	}
-	registry.uriByAlias[alias] = uri
-	if _, ok := registry.aliasByURI[uri]; !ok {
-		registry.aliasByURI[uri] = alias
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 
 	"github.com/easyssf/easyssf-go/ssf"
+	"github.com/easyssf/easyssf-go/ssf/eventtypes"
 )
 
 // Receiver assembles the parts for every configured transmitter from a Config (the Spring Boot
@@ -106,6 +107,13 @@ func New(config Config, opts ...Option) (*Receiver, error) {
 	}
 	if err := config.Validate(); err != nil {
 		return nil, err
+	}
+	// the aliases take effect only now, after the whole configuration passed: Validate itself
+	// changes nothing
+	for alias, uri := range config.EventAliases {
+		if err := eventtypes.RegisterAlias(alias, uri); err != nil {
+			return nil, err
+		}
 	}
 	o := options{clock: SystemClock, metrics: NoopMetrics{}}
 	for _, opt := range opts {
