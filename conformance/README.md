@@ -57,7 +57,7 @@ forwarding sidecar of testcontainers-go).
 |---|---|---|
 | `CTS_SUITE_IMAGE` | `registry.gitlab.com/openid/conformance-suite@sha256:…` (`release-v5.3.2`, pinned by digest) | the suite image |
 | `CTS_SUITE_NGINX_IMAGE` | `registry.gitlab.com/openid/conformance-suite/nginx@sha256:…` (`release-v5.3.2`, pinned by digest) | its nginx image |
-| `CTS_SUITE_MONGODB_IMAGE` | `mongo@sha256:…` (`9.0.2-noble`, pinned by digest; the suite itself runs 6.0.13 in production) | its MongoDB image |
+| `CTS_SUITE_MONGODB_IMAGE` | `mongo@sha256:…` (`9.0.4`, pinned by digest; the suite itself runs 6.0.13 in production, older 8.x and 9.x releases do not start on current Ubuntu kernels) | its MongoDB image |
 | `CTS_SUITE_PORT` | `18443` | host port of the Testcontainers-started suite |
 | `CTS_RECEIVER_PORT` | `9444` | port of the receiver under test |
 | `CTS_RECEIVER_PUSH_URL` | `https://host.testcontainers.internal:<receiver port>/ssf/push` | the push URL the receiver registers |

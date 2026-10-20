@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Fixed
+
+- The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
+  pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
+  and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the
+  suite found no database and the nightly run failed since the runner image of 2026-10-18.
+
 ## [0.6.0] - 2026-10-15
 
 The first release: the complete port, at feature parity with easyssf 0.6.0 for Java and

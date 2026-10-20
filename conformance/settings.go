@@ -17,8 +17,11 @@ const (
 	DefaultSuiteNginxImage = "registry.gitlab.com/openid/conformance-suite/nginx@sha256:607458218abb58204201e4d283af90177d6b542535a99a21041d399a1505a6a0"
 	// DefaultSuiteMongoDBImage is its MongoDB image. The suite's own compose file runs MongoDB
 	// 6.0.13, as the suite does in production; for the tests a current release, with far fewer
-	// known vulnerabilities, works just as well: mongo:9.0.2-noble, pinned by digest.
-	DefaultSuiteMongoDBImage = "mongo@sha256:61dd87ff554dc20386c63ebe1f7ede27314370ad5a7bf357c685fab424672158"
+	// known vulnerabilities, works just as well: mongo:9.0.4, pinned by digest. Not older:
+	// MongoDB 8.0 and newer refuse to start on a Linux kernel from 6.19 up to 7.0.13 (a tcmalloc
+	// incompatibility, SERVER-121912), and before 9.0.4 they took Ubuntu's 7.0 kernels, the ones
+	// of GitHub's runners since October 2026, for 7.0.0 (SERVER-131779).
+	DefaultSuiteMongoDBImage = "mongo@sha256:dc28ed5a9d0fc616903c3f463bb1e53b92b49f441721b91926e87d90bf957ce8"
 	// DefaultSuitePort is the host port the suite listens on. Fixed, as the suite has to know
 	// its own URL before it starts.
 	DefaultSuitePort = 18443
