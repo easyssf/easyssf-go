@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Changed
+
+- Go 1.26 is the minimum. The `conformance` module required it since 0.6.0 while the main module
+  said 1.25; the Go 1.25 leg of CI only passed because the toolchain of the conformance module was
+  downloaded on the fly, which `actions/setup-go` v6 and later forbid (`GOTOOLCHAIN=local`). Both
+  modules and CI now agree on 1.26.
+
 ### Fixed
 
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,

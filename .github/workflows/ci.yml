@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         # the minimum of go.mod and the latest stable release
-        go: ["1.25.x", "stable"]
+        go: ["1.26.x", "stable"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
