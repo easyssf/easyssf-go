@@ -1,0 +1,33 @@
+# Keeps the Go modules of both modules and the GitHub Actions current. Not covered: the conformance
+# suite images, pinned by digest in conformance/settings.go, and the Keycloak of
+# examples/keycloak/compose.yaml, which is the same file as in the Java and Rust repositories and
+# moves with them; check the registries for a new release by hand.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - /
+      - /conformance
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+      sqlite:
+        patterns:
+          - "modernc.org/*"
+      testcontainers:
+        patterns:
+          - "github.com/testcontainers/*"
+          - "github.com/moby/*"
+          - "github.com/docker/*"
+          - "github.com/containerd/*"
+          - "go.opentelemetry.io/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
