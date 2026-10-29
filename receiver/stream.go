@@ -569,9 +569,11 @@ type StreamRegistrar struct {
 	generation uint64
 }
 
-// errRegistrationSuperseded is the error of a registration that completed after a later Start
-// or Stop, or after its context ended: its outcome is not published.
-var errRegistrationSuperseded = errors.New("the SSF stream registration was superseded")
+// ErrRegistrationSuperseded is the error of a registration that completed after a later Start
+// or Stop of the registrar, or after its own context ended: the stream it registered belongs
+// to an earlier generation and was not published. Register returns it; the registration did
+// not fail at the transmitter.
+var ErrRegistrationSuperseded = errors.New("the SSF stream registration was superseded")
 
 // NewStreamRegistrarForExistingStream looks up the stream with the given identifier and makes
 // it known through stream.
@@ -691,7 +693,7 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 	}
 	for {
 		_, err := r.register(ctx, generation)
-		if err == nil || errors.Is(err, errRegistrationSuperseded) {
+		if err == nil || errors.Is(err, ErrRegistrationSuperseded) {
 			return
 		}
 		var mismatch *IssuerMismatchError
@@ -747,7 +749,7 @@ func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguratio
 // register registers the stream and publishes the result, unless the registration was
 // superseded meanwhile: its context ended, or a Start or Stop moved the generation on, and a
 // later registration may have published already. A superseded registration publishes nothing
-// and returns errRegistrationSuperseded.
+// and returns ErrRegistrationSuperseded.
 func (r *StreamRegistrar) register(ctx context.Context, generation uint64) (*ssf.StreamConfiguration, error) {
 	var stream *ssf.StreamConfiguration
 	var action string
@@ -766,7 +768,7 @@ func (r *StreamRegistrar) register(ctx context.Context, generation uint64) (*ssf
 	r.mu.Lock()
 	if r.generation != generation || ctx.Err() != nil {
 		r.mu.Unlock()
-		return nil, errRegistrationSuperseded
+		return nil, ErrRegistrationSuperseded
 	}
 	r.stream.SetConfiguration(stream)
 	r.state, r.lastError = StreamRegistered, ""

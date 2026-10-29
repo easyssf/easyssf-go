@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Added
+
+- `receiver.ErrRegistrationSuperseded`: what `StreamRegistrar.Register` returns when a later
+  `Start` or `Stop` overtook the registration, or its context ended, so that the stream it
+  registered was not published; `errors.Is` tells it from a failure at the transmitter.
+
 ### Changed
 
 - The poller checks that a SET of a poll response is listed under its own `jti` (RFC 8936,
