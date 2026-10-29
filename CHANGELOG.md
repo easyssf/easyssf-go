@@ -7,6 +7,11 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Changed
 
+- The poller checks that a SET of a poll response is listed under its own `jti` (RFC 8936,
+  section 2.3: the member name in `sets` is the `jti` of the SET). A SET listed under another
+  name is not handled and is reported under that name as `invalid_request`, so that the
+  acknowledgement never clears a different SET at the transmitter. The Java library acknowledges
+  by the name without the check.
 - Go 1.26 is the minimum. The `conformance` module required it since 0.6.0 while the main module
   said 1.25; the Go 1.25 leg of CI only passed because the toolchain of the conformance module was
   downloaded on the fly, which `actions/setup-go` v6 and later forbid (`GOTOOLCHAIN=local`). Both
@@ -32,7 +37,9 @@ All notable changes to this project will be documented in this file. The format 
   cleared the state on its way out, and nothing registered or polled any more. Both now start
   the new goroutine when the earlier context is done, whether or not its goroutine ended yet;
   the earlier goroutine leaves the new state alone. `Receiver.Start` after a cancelled context
-  therefore restarts the receiver reliably.
+  therefore restarts the receiver reliably. A registration whose context ended before its
+  request completed publishes nothing, so that it cannot overwrite the stream of the later
+  start.
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the

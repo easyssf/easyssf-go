@@ -118,6 +118,7 @@ func TestReportsInvalidSetToTheTransmitter(t *testing.T) {
 	p := poller(t, transmitter, r)
 	claims := transmitter.SetClaims("CaepSessionRevoked", alice(transmitter))
 	claims["aud"] = "https://other.example"
+	claims["jti"] = "bad"
 	transmitter.QueueSetWithJTI("bad", transmitter.SignSET(claims))
 	transmitter.QueueSetWithJTI("garbage", "not a set")
 	if pollNow(t, p) != 2 || r.count.Load() != 0 {
@@ -129,6 +130,20 @@ func TestReportsInvalidSetToTheTransmitter(t *testing.T) {
 	}
 	if codes["bad"] != "invalid_audience" || codes["garbage"] != "invalid_request" || len(transmitter.AcknowledgedSets()) != 0 {
 		t.Fatalf("%v", codes)
+	}
+}
+
+func TestReportsSETListedUnderAnotherJTIWithoutHandlingIt(t *testing.T) {
+	transmitter := ssftest.New()
+	r := &recorder{}
+	p := poller(t, transmitter, r)
+	transmitter.QueueSetWithJTI("other", transmitter.Set("CaepSessionRevoked", alice(transmitter)))
+	if pollNow(t, p) != 1 || r.count.Load() != 0 {
+		t.Fatal("fetched, not handled")
+	}
+	reported := transmitter.ReportedErrors()
+	if len(reported) != 1 || reported[0].JTI != "other" || reported[0].Code != "invalid_request" || len(transmitter.AcknowledgedSets()) != 0 {
+		t.Fatalf("%v", reported)
 	}
 }
 

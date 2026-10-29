@@ -72,8 +72,8 @@ sends the status and body it returns (see [Any framework](#any-framework)).
   panic in one is a failed handler, so a transmitter that disconnects does not cancel them.
 - **Polls for SETs** (RFC 8936): short or long polling, acknowledgements and error reports ride on
   the next request and wait in a `PollAckStore` until it succeeded, invalid SETs are reported with
-  their error code, `Retry-After` and `429` are honoured, the acknowledgements owed are flushed on
-  shutdown.
+  their error code, as is a SET listed under another `jti` than its own, `Retry-After` and `429`
+  are honoured, the acknowledgements owed are flushed on shutdown.
 - **Discovers the transmitter** from its `.well-known/ssf-configuration`, at the SSF location and
   at the one OpenID providers tend to use, and holds its issuer and endpoints to `https` unless a
   loopback address or `allow-insecure-http` says otherwise.

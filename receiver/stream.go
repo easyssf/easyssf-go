@@ -733,6 +733,11 @@ func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguratio
 	if err != nil {
 		return nil, err
 	}
+	// a registration whose context ended meanwhile publishes nothing: the result belongs to
+	// an earlier Start, and a later Start may have registered the stream already
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	r.stream.SetConfiguration(stream)
 	delivered := make([]string, 0, len(stream.EventsDelivered()))
 	for _, event := range stream.EventsDelivered() {

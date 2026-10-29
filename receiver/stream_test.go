@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -422,25 +423,55 @@ func TestProcessorRejectsInvalidVerificationEventWithoutHandlingOrRememberingIt(
 // ignoring the context of the request as a transport that does not notice a cancellation
 // does, and passes every other request on.
 type holdFirst struct {
-	inner   http.RoundTripper
-	first   sync.Once
-	held    chan struct{} // closed once the first request is held
-	release chan struct{} // close to let the first request go on
+	inner     http.RoundTripper
+	first     sync.Once
+	held      chan struct{} // closed once the first request is held
+	release   chan struct{} // close to let the first request go on
+	completed chan struct{} // closed once the first request completed
 }
 
 func holdFirstRequestOf(client *http.Client) (*http.Client, *holdFirst) {
-	hold := &holdFirst{inner: client.Transport, held: make(chan struct{}), release: make(chan struct{})}
+	hold := &holdFirst{inner: client.Transport, held: make(chan struct{}), release: make(chan struct{}), completed: make(chan struct{})}
 	return &http.Client{Transport: hold}, hold
 }
 
 func (h *holdFirst) RoundTrip(r *http.Request) (*http.Response, error) {
 	first := false
 	h.first.Do(func() { first = true })
-	if first {
-		close(h.held)
-		<-h.release
+	if !first {
+		return h.inner.RoundTrip(r)
 	}
-	return h.inner.RoundTrip(r)
+	close(h.held)
+	<-h.release
+	defer close(h.completed)
+	// completes regardless of the cancellation, as a transport that does not notice it does
+	return h.inner.RoundTrip(r.WithContext(context.WithoutCancel(r.Context())))
+}
+
+func TestCancelledRegistrationDoesNotPublishItsResultAfterARestart(t *testing.T) {
+	transmitter := ssftest.New()
+	client, hold := holdFirstRequestOf(transmitter.Client)
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, tokenProvider(t, transmitter)), stream, pushStream("CaepSessionRevoked"))
+	var notified atomic.Int32
+	registrar.AddListener(func(*ssf.StreamConfiguration) { notified.Add(1) })
+	first, cancel := context.WithCancel(ctx)
+	registrar.Start(first)
+	<-hold.held
+	cancel()
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
+	if notified.Load() != 1 {
+		t.Fatal("notified of the registration")
+	}
+	registered := stream.StreamID()
+	// the request of the cancelled registration completes now, and its result is stale
+	close(hold.release)
+	<-hold.completed
+	ssftest.During(t, 200*time.Millisecond, "the cancelled registration to publish nothing", func() bool {
+		return notified.Load() == 1 && stream.StreamID() == registered && registrar.State() == receiver.StreamRegistered
+	})
+	registrar.Stop(ctx)
 }
 
 func TestRegistrarStartsAgainWhileTheGoroutineOfTheCancelledStartIsStillEnding(t *testing.T) {

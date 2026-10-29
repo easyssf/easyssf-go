@@ -563,7 +563,15 @@ func (p *Poller) pollRequests(ctx context.Context, endpoint *url.URL, key string
 
 func (p *Poller) process(ctx context.Context, key, jti, encodedSET string) {
 	var ack *PendingAck
-	_, err := p.processor.Process(ctx, encodedSET, ssf.Poll)
+	var err error
+	// RFC 8936, section 2.3: the member name of a SET in sets is its jti, and the receiver
+	// acknowledges by that name. A SET filed under another jti is not handled: an
+	// acknowledgement by the name would clear a different SET at the transmitter
+	if actual := ssf.StringMember(UnverifiedPayload(encodedSET), "jti"); actual != "" && actual != jti {
+		err = Rejected(InvalidRequest, "The SET is listed under the jti %s but carries the jti %s", jti, actual)
+	} else {
+		_, err = p.processor.Process(ctx, encodedSET, ssf.Poll)
+	}
 	switch {
 	case err == nil:
 		a := Ack(jti)
