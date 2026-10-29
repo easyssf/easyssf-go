@@ -37,9 +37,10 @@ All notable changes to this project will be documented in this file. The format 
   cleared the state on its way out, and nothing registered or polled any more. Both now start
   the new goroutine when the earlier context is done, whether or not its goroutine ended yet;
   the earlier goroutine leaves the new state alone. `Receiver.Start` after a cancelled context
-  therefore restarts the receiver reliably. A registration whose context ended before its
-  request completed publishes nothing, so that it cannot overwrite the stream of the later
-  start.
+  therefore restarts the receiver reliably. A registration that a later `Start` or `Stop`
+  superseded, or whose context ended, publishes nothing, neither the stream it registered nor
+  the failure it ran into, so that it cannot overwrite the stream or the state of the later
+  start; the check is made under the lock the lifecycle moves under.
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the

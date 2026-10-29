@@ -419,26 +419,29 @@ func TestProcessorRejectsInvalidVerificationEventWithoutHandlingOrRememberingIt(
 	}
 }
 
-// holdFirst is an http.RoundTripper that holds the first request until release is closed,
+// holdRequest is an http.RoundTripper that holds the nth request until release is closed,
 // ignoring the context of the request as a transport that does not notice a cancellation
 // does, and passes every other request on.
-type holdFirst struct {
+type holdRequest struct {
 	inner     http.RoundTripper
-	first     sync.Once
-	held      chan struct{} // closed once the first request is held
-	release   chan struct{} // close to let the first request go on
-	completed chan struct{} // closed once the first request completed
+	nth       int32
+	count     atomic.Int32
+	held      chan struct{} // closed once the request is held
+	release   chan struct{} // close to let the request go on
+	completed chan struct{} // closed once the request completed
 }
 
-func holdFirstRequestOf(client *http.Client) (*http.Client, *holdFirst) {
-	hold := &holdFirst{inner: client.Transport, held: make(chan struct{}), release: make(chan struct{}), completed: make(chan struct{})}
+func holdFirstRequestOf(client *http.Client) (*http.Client, *holdRequest) {
+	return holdRequestOf(client, 1)
+}
+
+func holdRequestOf(client *http.Client, nth int32) (*http.Client, *holdRequest) {
+	hold := &holdRequest{inner: client.Transport, nth: nth, held: make(chan struct{}), release: make(chan struct{}), completed: make(chan struct{})}
 	return &http.Client{Transport: hold}, hold
 }
 
-func (h *holdFirst) RoundTrip(r *http.Request) (*http.Response, error) {
-	first := false
-	h.first.Do(func() { first = true })
-	if !first {
+func (h *holdRequest) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h.count.Add(1) != h.nth {
 		return h.inner.RoundTrip(r)
 	}
 	close(h.held)
@@ -446,6 +449,34 @@ func (h *holdFirst) RoundTrip(r *http.Request) (*http.Response, error) {
 	defer close(h.completed)
 	// completes regardless of the cancellation, as a transport that does not notice it does
 	return h.inner.RoundTrip(r.WithContext(context.WithoutCancel(r.Context())))
+}
+
+func TestCancelledRegistrationThatFailsAfterARestartDoesNotRecordItsFailure(t *testing.T) {
+	transmitter := ssftest.New()
+	// the second request of the registration creates the stream, after the listing found none;
+	// held until the transmitter issues streams for another issuer
+	client, hold := holdRequestOf(transmitter.Client, 2)
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, tokenProvider(t, transmitter)), stream, pushStream("CaepSessionRevoked"))
+	first, cancel := context.WithCancel(ctx)
+	registrar.Start(first)
+	<-hold.held
+	cancel()
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
+	registered := stream.StreamID()
+	// the held create succeeds once the transmitter has room for a stream again, with a
+	// stream of another issuer: the cancelled registration ends in an issuer mismatch
+	if err := streamClient(t, transmitter).DeleteStream(ctx, registered); err != nil {
+		t.Fatal(err)
+	}
+	transmitter.SetStreamIssuer("https://other.example")
+	close(hold.release)
+	<-hold.completed
+	ssftest.During(t, 200*time.Millisecond, "the cancelled registration to record no failure", func() bool {
+		return registrar.State() == receiver.StreamRegistered && registrar.LastError() == "" && stream.StreamID() == registered
+	})
+	registrar.Stop(ctx)
 }
 
 func TestCancelledRegistrationDoesNotPublishItsResultAfterARestart(t *testing.T) {

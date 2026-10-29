@@ -564,7 +564,14 @@ type StreamRegistrar struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	ended     <-chan struct{} // the Done of the context the goroutine runs with
+	// generation counts the Starts and Stops; a registration publishes its outcome only
+	// while the generation it began in is the current one
+	generation uint64
 }
+
+// errRegistrationSuperseded is the error of a registration that completed after a later Start
+// or Stop, or after its context ended: its outcome is not published.
+var errRegistrationSuperseded = errors.New("the SSF stream registration was superseded")
 
 // NewStreamRegistrarForExistingStream looks up the stream with the given identifier and makes
 // it known through stream.
@@ -625,10 +632,11 @@ func (r *StreamRegistrar) Start(ctx context.Context) {
 		return
 	}
 	r.state = StreamRegistering
+	r.generation++
 	ctx, r.cancel = context.WithCancel(ctx)
 	r.done = make(chan struct{})
 	r.ended = ctx.Done()
-	go r.registerWithRetries(ctx, r.done)
+	go r.registerWithRetries(ctx, r.done, r.generation)
 }
 
 // closed reports whether the channel is closed, false for nil.
@@ -647,6 +655,7 @@ func (r *StreamRegistrar) Stop(ctx context.Context) {
 	r.mu.Lock()
 	cancel, done := r.cancel, r.done
 	r.cancel, r.done, r.ended = nil, nil, nil
+	r.generation++
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -665,7 +674,7 @@ func (r *StreamRegistrar) Stop(ctx context.Context) {
 
 func (r *StreamRegistrar) log() *slog.Logger { return orDiscard(r.Log) }
 
-func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan struct{}) {
+func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan struct{}, generation uint64) {
 	defer close(done)
 	// the goroutine clears its own state when the context of Start ends, so that IsRunning
 	// tells the truth and Start works again; not when Stop took the state already
@@ -681,15 +690,15 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 		delay = time.Second
 	}
 	for {
-		_, err := r.Register(ctx)
-		if err == nil {
+		_, err := r.register(ctx, generation)
+		if err == nil || errors.Is(err, errRegistrationSuperseded) {
 			return
 		}
 		var mismatch *IssuerMismatchError
 		if errors.As(err, &mismatch) {
 			// trying again would only create another stream that must not be used
 			r.log().Error("Not using the SSF stream", "error", err)
-			r.setState(StreamFailed, err.Error())
+			r.setState(generation, StreamFailed, err.Error())
 			if streamID := mismatch.Stream.StreamID(); streamID != "" {
 				if err := r.client.DeleteStream(ctx, streamID); err != nil {
 					r.log().Warn("Could not delete SSF stream", "stream", streamID, "error", err)
@@ -700,7 +709,7 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 		if ctx.Err() != nil {
 			return
 		}
-		r.setState(StreamRegistering, err.Error())
+		r.setState(generation, StreamRegistering, err.Error())
 		r.log().Warn("Could not set up the SSF stream, trying again", "retry_in", delay, "error", err)
 		select {
 		case <-ctx.Done():
@@ -713,14 +722,33 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 	}
 }
 
-func (r *StreamRegistrar) setState(state StreamRegistrarState, lastError string) {
+// setState records the state of a registration of the given generation; a registration a
+// later Start or Stop superseded records nothing.
+func (r *StreamRegistrar) setState(generation uint64, state StreamRegistrarState, lastError string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.generation != generation {
+		return
+	}
 	r.state, r.lastError = state, lastError
+}
+
+func (r *StreamRegistrar) currentGeneration() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.generation
 }
 
 // Register looks up or registers the stream once, on the caller's goroutine, and makes it known.
 func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguration, error) {
+	return r.register(ctx, r.currentGeneration())
+}
+
+// register registers the stream and publishes the result, unless the registration was
+// superseded meanwhile: its context ended, or a Start or Stop moved the generation on, and a
+// later registration may have published already. A superseded registration publishes nothing
+// and returns errRegistrationSuperseded.
+func (r *StreamRegistrar) register(ctx context.Context, generation uint64) (*ssf.StreamConfiguration, error) {
 	var stream *ssf.StreamConfiguration
 	var action string
 	var err error
@@ -733,12 +761,17 @@ func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguratio
 	if err != nil {
 		return nil, err
 	}
-	// a registration whose context ended meanwhile publishes nothing: the result belongs to
-	// an earlier Start, and a later Start may have registered the stream already
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	// the configuration and the state are published under the lock that Start and Stop move
+	// the generation under, so that a superseded registration cannot slip in between
+	r.mu.Lock()
+	if r.generation != generation || ctx.Err() != nil {
+		r.mu.Unlock()
+		return nil, errRegistrationSuperseded
 	}
 	r.stream.SetConfiguration(stream)
+	r.state, r.lastError = StreamRegistered, ""
+	listeners := append([]func(*ssf.StreamConfiguration){}, r.listeners...)
+	r.mu.Unlock()
 	delivered := make([]string, 0, len(stream.EventsDelivered()))
 	for _, event := range stream.EventsDelivered() {
 		delivered = append(delivered, eventtypes.AliasOf(event))
@@ -749,10 +782,6 @@ func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguratio
 	}
 	r.log().Info(action+" SSF stream", "stream", stream.StreamID(), "delivery", stream.DeliveryMethodURI(),
 		"endpoint", endpoint, "events", delivered, "audience", stream.Audience())
-	r.mu.Lock()
-	r.state, r.lastError = StreamRegistered, ""
-	listeners := append([]func(*ssf.StreamConfiguration){}, r.listeners...)
-	r.mu.Unlock()
 	for _, listener := range listeners {
 		listener(stream)
 	}
