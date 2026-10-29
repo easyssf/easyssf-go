@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/easyssf/easyssf-go v0.0.0
-	github.com/moby/moby/api v1.55.0
+	github.com/moby/moby/api v1.56.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 )
 
