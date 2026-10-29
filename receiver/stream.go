@@ -563,6 +563,7 @@ type StreamRegistrar struct {
 	listeners []func(*ssf.StreamConfiguration)
 	cancel    context.CancelFunc
 	done      chan struct{}
+	ended     <-chan struct{} // the Done of the context the goroutine runs with
 }
 
 // NewStreamRegistrarForExistingStream looks up the stream with the given identifier and makes
@@ -615,17 +616,29 @@ func (r *StreamRegistrar) IsRunning() bool {
 
 // Start starts looking up or registering the stream in the background; it returns at once.
 // Cancelling ctx or calling Stop ends the retries. Calling it again while running has no
-// effect; once the retries ended, because ctx was cancelled, Start starts them again.
+// effect; once ctx was cancelled, Start starts them again, also while the goroutine of the
+// earlier Start is still on its way out.
 func (r *StreamRegistrar) Start(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cancel != nil {
+	if r.cancel != nil && !closed(r.ended) {
 		return
 	}
 	r.state = StreamRegistering
 	ctx, r.cancel = context.WithCancel(ctx)
 	r.done = make(chan struct{})
+	r.ended = ctx.Done()
 	go r.registerWithRetries(ctx, r.done)
+}
+
+// closed reports whether the channel is closed, false for nil.
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return c != nil
+	default:
+		return false
+	}
 }
 
 // Stop stops the background registration and, if DeleteOnShutdown says so, deletes a stream the
@@ -633,7 +646,7 @@ func (r *StreamRegistrar) Start(ctx context.Context) {
 func (r *StreamRegistrar) Stop(ctx context.Context) {
 	r.mu.Lock()
 	cancel, done := r.cancel, r.done
-	r.cancel, r.done = nil, nil
+	r.cancel, r.done, r.ended = nil, nil, nil
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -660,7 +673,7 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if r.done == done {
-			r.cancel, r.done = nil, nil
+			r.cancel, r.done, r.ended = nil, nil, nil
 		}
 	}()
 	delay := r.InitialRetryDelay

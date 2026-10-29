@@ -41,9 +41,17 @@ func TestURIPolicyRequiresHTTPSExceptOnLoopback(t *testing.T) {
 	if _, err := policy.CheckIssuer("http://idp.example/realms/demo"); err == nil || !strings.Contains(err.Error(), "must use https") {
 		t.Fatalf("%v", err)
 	}
-	for _, issuer := range []string{"http://localhost:8080/realms/demo", "http://127.0.0.1:8080/x", "http://[::1]:8080/x", "http://app.localhost/x"} {
+	for _, issuer := range []string{"http://localhost:8080/realms/demo", "http://LocalHost/x", "http://127.0.0.1:8080/x", "http://127.255.255.254/x",
+		"http://[::1]:8080/x", "http://[0:0:0:0:0:0:0:1]/x", "http://[::ffff:127.0.0.1]/x", "http://app.localhost/x"} {
 		if _, err := policy.CheckIssuer(issuer); err != nil {
 			t.Fatal(issuer)
+		}
+	}
+	// a host name that starts with 127. is resolved by DNS and goes wherever its owner points it
+	for _, issuer := range []string{"http://127.attacker.example/x", "http://127.0.0.1.attacker.example/x", "http://127.1/x", "http://127/x",
+		"http://localhost.attacker.example/x", "http://[::2]/x", "http://[::ffff:10.0.0.1]/x", "http://10.0.0.1/x"} {
+		if _, err := policy.CheckIssuer(issuer); err == nil || !strings.Contains(err.Error(), "must use https") {
+			t.Fatalf("%s: %v", issuer, err)
 		}
 	}
 	insecure := receiver.URIPolicy{AllowInsecureHTTP: true}

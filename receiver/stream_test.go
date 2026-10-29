@@ -5,6 +5,7 @@ package receiver_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -415,6 +416,53 @@ func TestProcessorRejectsInvalidVerificationEventWithoutHandlingOrRememberingIt(
 	if _, err := p.Process(ctx, set, ssf.Push); err != nil || r.count.Load() != 1 {
 		t.Fatal(err)
 	}
+}
+
+// holdFirst is an http.RoundTripper that holds the first request until release is closed,
+// ignoring the context of the request as a transport that does not notice a cancellation
+// does, and passes every other request on.
+type holdFirst struct {
+	inner   http.RoundTripper
+	first   sync.Once
+	held    chan struct{} // closed once the first request is held
+	release chan struct{} // close to let the first request go on
+}
+
+func holdFirstRequestOf(client *http.Client) (*http.Client, *holdFirst) {
+	hold := &holdFirst{inner: client.Transport, held: make(chan struct{}), release: make(chan struct{})}
+	return &http.Client{Transport: hold}, hold
+}
+
+func (h *holdFirst) RoundTrip(r *http.Request) (*http.Response, error) {
+	first := false
+	h.first.Do(func() { first = true })
+	if first {
+		close(h.held)
+		<-h.release
+	}
+	return h.inner.RoundTrip(r)
+}
+
+func TestRegistrarStartsAgainWhileTheGoroutineOfTheCancelledStartIsStillEnding(t *testing.T) {
+	transmitter := ssftest.New()
+	client, hold := holdFirstRequestOf(transmitter.Client)
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, tokenProvider(t, transmitter)), stream, pushStream("CaepSessionRevoked"))
+	first, cancel := context.WithCancel(ctx)
+	registrar.Start(first)
+	<-hold.held
+	cancel()
+	// the goroutine of the first Start is stuck in its request and has not ended yet
+	registrar.Start(ctx)
+	if !registrar.IsRunning() {
+		t.Fatal("not started again")
+	}
+	close(hold.release)
+	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
+	if stream.StreamID() == "" {
+		t.Fatal("registered by the second Start")
+	}
+	registrar.Stop(ctx)
 }
 
 func TestRegistrarStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {

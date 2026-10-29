@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -46,11 +47,17 @@ type URIPolicy struct {
 // IsInsecure reports whether the URL uses plain http.
 func IsInsecure(u *url.URL) bool { return strings.EqualFold(u.Scheme, "http") }
 
-// IsLoopback reports whether the host of the URL is a loopback address.
+// IsLoopback reports whether the host of the URL is a loopback address: localhost or a name
+// under it (RFC 6761), an address of 127.0.0.0/8, ::1 or an IPv4-mapped one of those. A name
+// that merely starts with "127." (127.attacker.example) is not: that is a host name resolved by
+// DNS, which goes wherever its owner points it.
 func IsLoopback(u *url.URL) bool {
 	host := strings.ToLower(u.Hostname())
-	return host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasPrefix(host, "127.") ||
-		host == "::1" || host == "0:0:0:0:0:0:0:1"
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.Unmap().IsLoopback()
 }
 
 // CheckIssuer checks the issuer of a transmitter and returns it as a URL.
@@ -583,6 +590,9 @@ type Transmitter struct {
 	// PushAuthorizationHeader is the Authorization header the transmitter has to send to the
 	// push endpoint, "" if none is expected.
 	PushAuthorizationHeader string
+
+	// wakesPoller records that Start made the registrar wake the poller, so that it is done once
+	wakesPoller bool
 }
 
 // String is the name and issuer.
@@ -590,9 +600,14 @@ func (t *Transmitter) String() string { return fmt.Sprintf("%s (%s)", t.Name, t.
 
 // Start starts the background work: looking up or registering the stream, and polling. The
 // first poll follows the registration at once: the registrar wakes the poller.
+//
+// Start and Stop are not safe for concurrent use with each other; Receiver serializes them.
 func (t *Transmitter) Start(ctx context.Context) {
 	if t.Registrar != nil {
-		if t.Poller != nil {
+		if t.Poller != nil && !t.wakesPoller {
+			// once: Start after Stop, or after the context of the first Start ended, must not
+			// add a listener each time
+			t.wakesPoller = true
 			poller := t.Poller
 			t.Registrar.AddListener(func(*ssf.StreamConfiguration) { poller.WakeUp() })
 		}

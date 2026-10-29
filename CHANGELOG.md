@@ -11,9 +11,28 @@ All notable changes to this project will be documented in this file. The format 
   said 1.25; the Go 1.25 leg of CI only passed because the toolchain of the conformance module was
   downloaded on the fly, which `actions/setup-go` v6 and later forbid (`GOTOOLCHAIN=local`). Both
   modules and CI now agree on 1.26.
+- The README says to decode the configuration strictly (`KnownFields`, `DisallowUnknownFields`,
+  `ErrorUnused`): `Config.Validate` cannot see a misspelt key the decoder dropped.
 
 ### Fixed
 
+- `receiver.IsLoopback`, which lets a transmitter use `http` without `allow-insecure-http`, took
+  every host name that starts with `127.` for a loopback address: `http://127.attacker.example`
+  passed as an issuer, an endpoint of the metadata or a poll endpoint of the stream, and the
+  receiver's token and the keys it trusts could have gone over plain http to a host resolved by
+  DNS. The host is now parsed as an IP address (`net/netip`): `127.0.0.0/8`, `::1` and the
+  IPv4-mapped forms of those are loopback, as are `localhost` and the names under it; a name is
+  not. The Java and Rust libraries have the same check; .NET and Python parse the address already.
+- `Transmitter.Start` added a listener to the stream registrar, to wake the poller after the
+  registration, on every call: a receiver stopped and started again, or started again after the
+  context of its first start ended, woke the poller once per start and kept a closure per start.
+  The listener is added once.
+- `StreamRegistrar.Start` and `Poller.Start`, called right after the context of the earlier start
+  was cancelled, found the earlier goroutine still on its way out and did nothing; it then
+  cleared the state on its way out, and nothing registered or polled any more. Both now start
+  the new goroutine when the earlier context is done, whether or not its goroutine ended yet;
+  the earlier goroutine leaves the new state alone. `Receiver.Start` after a cancelled context
+  therefore restarts the receiver reliably.
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the

@@ -266,6 +266,7 @@ type Poller struct {
 	lastPollError        string
 	cancel               context.CancelFunc
 	done                 chan struct{}
+	ended                <-chan struct{} // the Done of the context the goroutine runs with
 	wake                 chan struct{}
 }
 
@@ -306,15 +307,17 @@ func (p *Poller) IsLongPolling() bool { return p.options.LongPollingHold > 0 }
 // Start starts polling the transmitter in a goroutine of its own: periodically, or with one
 // request always outstanding when long polling, until ctx is cancelled or Stop is called.
 // Without it, SETs are only fetched by calling PollNow. Calling it again while running has no
-// effect; once the goroutine ended, because ctx was cancelled, Start starts it again.
+// effect; once ctx was cancelled, Start starts it again, also while the goroutine of the
+// earlier Start is still on its way out.
 func (p *Poller) Start(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.cancel != nil {
+	if p.cancel != nil && !closed(p.ended) {
 		return
 	}
 	ctx, p.cancel = context.WithCancel(ctx)
 	p.done = make(chan struct{})
+	p.ended = ctx.Done()
 	go p.run(ctx, p.done)
 }
 
@@ -325,7 +328,7 @@ func (p *Poller) Start(ctx context.Context) {
 func (p *Poller) Stop(ctx context.Context) {
 	p.mu.Lock()
 	cancel, done := p.cancel, p.done
-	p.cancel, p.done = nil, nil
+	p.cancel, p.done, p.ended = nil, nil, nil
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -428,7 +431,7 @@ func (p *Poller) run(ctx context.Context, done chan struct{}) {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if p.done == done {
-			p.cancel, p.done = nil, nil
+			p.cancel, p.done, p.ended = nil, nil, nil
 		}
 	}()
 	options := p.options

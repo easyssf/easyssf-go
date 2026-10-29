@@ -42,6 +42,55 @@ func TestSkipsSETThatWasProcessedBefore(t *testing.T) {
 	}
 }
 
+// A handler that outlives the lease loses the SET to the instance that takes it over. The
+// first instance still reports what its handlers did, as they ran and succeeded (the delivery
+// is acknowledged, as the Java library does), but the outcome recorded in the store is the one
+// of the instance that took the SET over: the first instance's claim no longer fences.
+func TestSETTakenOverWhileItsHandlersRanIsRecordedByTheInstanceThatTookItOver(t *testing.T) {
+	transmitter := ssftest.New()
+	clock := newTestClock()
+	store := receiver.NewInMemoryJTIDedupStore(10, 60*time.Second, clock.Now)
+	slow := &recorder{}
+	release, running := make(chan struct{}), make(chan struct{})
+	slowHandler := receiver.HandlerFunc(func(ctx context.Context, event *receiver.Context) error {
+		close(running)
+		<-release
+		return slow.Handle(ctx, event)
+	})
+	options := receiver.ProcessorOptions{ClaimRenewal: 10 * time.Millisecond}
+	first := receiver.NewProcessor(verifier(t, transmitter), store, options).AddHandler(slowHandler)
+	other := &recorder{}
+	second := receiver.NewProcessor(verifier(t, transmitter), store, options).AddHandler(other)
+	set := transmitter.Set("CaepSessionRevoked", alice(transmitter))
+
+	type result struct {
+		outcome receiver.ProcessingOutcome
+		err     error
+	}
+	results := make(chan result, 1)
+	go func() {
+		outcome, err := first.Process(ctx, set, ssf.Push)
+		results <- result{outcome, err}
+	}()
+	<-running
+	// the first instance's handler outlives the lease: the second instance takes the SET over
+	clock.Advance(61 * time.Second)
+	if outcome, err := second.Process(ctx, set, ssf.Push); err != nil || outcome != receiver.Handled || other.count.Load() != 1 {
+		t.Fatalf("taken over: %v %v", outcome, err)
+	}
+	close(release)
+	got := <-results
+	if got.err != nil || got.outcome != receiver.Handled || slow.count.Load() != 1 {
+		t.Fatalf("the first instance's handler succeeded: %v %v", got.outcome, got.err)
+	}
+	if outcome, err := second.Process(ctx, set, ssf.Push); err != nil || outcome != receiver.Duplicate {
+		t.Fatalf("recorded as processed: %v %v", outcome, err)
+	}
+	if other.count.Load() != 1 || slow.count.Load() != 1 {
+		t.Fatal("handled once by each instance")
+	}
+}
+
 func TestProcessesDuplicatesWithoutDedupStore(t *testing.T) {
 	transmitter := ssftest.New()
 	r := &recorder{}

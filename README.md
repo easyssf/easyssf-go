@@ -114,7 +114,9 @@ easyssf:
 
 ```go
 config := receiver.DefaultConfig()
-if err := yaml.Unmarshal(bytes, &wrapper{EasySSF: struct{ Receiver *receiver.Config }{&config}}); err != nil { ... }
+decoder := yaml.NewDecoder(file)
+decoder.KnownFields(true)                               // a misspelt key fails instead of keeping the default
+if err := decoder.Decode(&wrapper{EasySSF: struct{ Receiver *receiver.Config }{&config}}); err != nil { ... }
 
 rcv, err := receiver.New(config,
     receiver.WithLogger(slog.Default()),
@@ -122,6 +124,15 @@ rcv, err := receiver.New(config,
 if err != nil { ... }                                   // the configuration is validated, every failure at once
 rcv.Start(ctx)                                          // registers the stream, starts polling
 defer rcv.Stop(context.Background())                    // sends the acknowledgements it owes
+```
+
+Decode the configuration strictly: `Config.Validate` checks the values it gets, but a key the
+decoder did not recognise is dropped before that, and a misspelt `expected-auth-header` or
+`allow-insecure-http` then silently keeps its default. `yaml.v3` has `Decoder.KnownFields(true)`,
+`encoding/json` `Decoder.DisallowUnknownFields()`, mapstructure `ErrorUnused: true` (viper's
+`UnmarshalExact`, koanf's `UnmarshalWithConf` with that in `DecoderConfig`).
+
+```go
 
 mux := http.NewServeMux()
 mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler())

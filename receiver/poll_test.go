@@ -565,6 +565,32 @@ func TestPollerStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {
 	}
 }
 
+func TestPollerStartsAgainWhileTheGoroutineOfTheCancelledStartIsStillEnding(t *testing.T) {
+	transmitter := ssftest.New()
+	client, hold := holdFirstRequestOf(transmitter.Client)
+	r := &recorder{}
+	p := receiver.NewPoller(client, receiver.FixedToken(ssftest.AccessToken), receiver.FixedPollEndpoint(pollURL(t, transmitter)), processor(t, transmitter, r), pollerOptions())
+	first, cancel := context.WithCancel(ctx)
+	p.Start(first)
+	<-hold.held
+	cancel()
+	// the goroutine of the first Start is stuck in its poll request and has not ended yet
+	p.Start(ctx)
+	if !p.IsRunning() {
+		t.Fatal("not started again")
+	}
+	close(hold.release)
+	queue(transmitter)
+	ssftest.Eventually(t, 5*time.Second, "the SET to be polled by the second Start", func() bool { return r.count.Load() == 1 })
+	if !p.IsRunning() {
+		t.Fatal("the end of the first goroutine stopped the second")
+	}
+	p.Stop(ctx)
+	if p.IsRunning() {
+		t.Fatal("not stopped")
+	}
+}
+
 func TestPollerRefusesPollEndpointThePolicyForbids(t *testing.T) {
 	transmitter := ssftest.New()
 	insecure, _ := url.Parse("http://transmitter.example/realms/test/ssf/poll")
