@@ -177,8 +177,11 @@ func TestRegistrarCreatesStream(t *testing.T) {
 
 func TestRegistrarTellsItsListenersOnceTheStreamIsRegistered(t *testing.T) {
 	transmitter := ssftest.New()
+	// the first request is held, so that the registration cannot complete, and its goroutine
+	// end, before IsRunning is asked
+	client, hold := holdFirstRequestOf(transmitter.Client)
 	stream := receiver.NewReceiverStream()
-	registrar := receiver.NewStreamRegistrarForManagedStream(streamClient(t, transmitter), stream, pushStream("CaepSessionRevoked"))
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, tokenProvider(t, transmitter)), stream, pushStream("CaepSessionRevoked"))
 	var mu sync.Mutex
 	var told []string
 	registrar.AddListener(func(s *ssf.StreamConfiguration) {
@@ -187,9 +190,11 @@ func TestRegistrarTellsItsListenersOnceTheStreamIsRegistered(t *testing.T) {
 		told = append(told, s.StreamID())
 	})
 	registrar.Start(ctx)
+	<-hold.held
 	if !registrar.IsRunning() {
 		t.Fatal("running")
 	}
+	close(hold.release)
 	ssftest.Eventually(t, 5*time.Second, "the listener was told", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
