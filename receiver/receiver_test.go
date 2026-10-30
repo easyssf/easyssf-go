@@ -35,6 +35,7 @@ func TestConfigBindsFromJSONWithDefaultsAndKebabCaseKeys(t *testing.T) {
 		"poll": {"interval": "10s", "long-polling": true, "rate-limit": {"fallback-backoff": "2m"}},
 		"set-validation": {"accepted-algorithms": ["RS256", "PS256"], "subject-compatibility": "legacy"},
 		"dedup": {"lease": "90s"},
+		"http": {"max-response-size": "1MB"},
 		"revocation": {"ttl": "48h"},
 		"session-termination": {"scim-attribute-claims": {"userName": "sub"}},
 		"data": {"initialize-schema": "always", "table-prefix": "app.ssf_"},
@@ -50,7 +51,8 @@ func TestConfigBindsFromJSONWithDefaultsAndKebabCaseKeys(t *testing.T) {
 		config.Poll.RateLimit.FallbackBackoff.Std() != 2*time.Minute || len(config.EffectiveAcceptedAlgorithms()) != 2 ||
 		config.Dedup.Lease.Std() != 90*time.Second || config.Revocation.TTL.Std() != 48*time.Hour || config.Push.EndpointPath != "/ssf/push" ||
 		config.Transmitters["okta"].TransmitterIssuer != "https://okta.example" || len(config.AllTransmitters()) != 2 ||
-		config.SessionTermination.EffectiveScimAttributeClaims()[0] != [2]string{"userName", "sub"} || config.Data.TablePrefix != "app.ssf_" {
+		config.SessionTermination.EffectiveScimAttributeClaims()[0] != [2]string{"userName", "sub"} || config.Data.TablePrefix != "app.ssf_" ||
+		config.HTTP.MaxResponseSize.Bytes() != 1<<20 {
 		t.Fatalf("%+v", config)
 	}
 	if mode, _ := config.SubjectCompatibility(); mode != ssf.Legacy {
@@ -73,6 +75,36 @@ func TestConfigBindsFromJSONWithDefaultsAndKebabCaseKeys(t *testing.T) {
 	}
 }
 
+func TestByteSizeBindsLikeSpringsDataSize(t *testing.T) {
+	for _, c := range []struct {
+		text     string
+		expected int64
+	}{{"4MB", 4 << 20}, {"512kb", 512 << 10}, {" 1 GB ", 1 << 30}, {"10B", 10}, {"1048576", 1 << 20}, {"0", 0}} {
+		var size receiver.ByteSize
+		if err := size.UnmarshalText([]byte(c.text)); err != nil || size.Bytes() != c.expected {
+			t.Errorf("%q: %d, %v", c.text, size.Bytes(), err)
+		}
+	}
+	for _, text := range []string{"", "MB", "-1MB", "4 MiB", "1.5MB", "9999999TB"} {
+		var size receiver.ByteSize
+		if err := size.UnmarshalText([]byte(text)); err == nil {
+			t.Errorf("%q: accepted as %d", text, size.Bytes())
+		}
+	}
+	var fromNumber struct {
+		Size receiver.ByteSize `json:"size"`
+	}
+	if err := json.Unmarshal([]byte(`{"size": 2048}`), &fromNumber); err != nil || fromNumber.Size.Bytes() != 2048 {
+		t.Fatalf("%d, %v", fromNumber.Size.Bytes(), err)
+	}
+	if text, _ := receiver.ByteSize(receiver.DefaultMaxResponseSize).MarshalText(); string(text) != "4MB" {
+		t.Fatal(string(text))
+	}
+	if text, _ := receiver.ByteSize(1536).MarshalText(); string(text) != "1536B" {
+		t.Fatal(string(text))
+	}
+}
+
 func TestValidationReportsEveryFailure(t *testing.T) {
 	config := receiver.DefaultConfig()
 	config.TransmitterIssuer = "http://idp.example"
@@ -82,11 +114,12 @@ func TestValidationReportsEveryFailure(t *testing.T) {
 	config.SetValidation.AcceptedAlgorithms = []string{"HS256"}
 	config.Data.TablePrefix = "bad prefix"
 	config.Data.InitializeSchema = "sometimes"
+	config.HTTP.MaxResponseSize = 0
 	err := config.Validate()
 	if err == nil {
 		t.Fatal("invalid")
 	}
-	for _, expected := range []string{"transmitter-issuer", "https", "expected-audience", "oauth2.client-id", "accepted-algorithms", "push.endpoint-path", "dedup", "data.table-prefix", "data.initialize-schema"} {
+	for _, expected := range []string{"transmitter-issuer", "https", "expected-audience", "oauth2.client-id", "accepted-algorithms", "push.endpoint-path", "dedup", "data.table-prefix", "data.initialize-schema", "http.max-response-size"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("missing %q in %v", expected, err)
 		}

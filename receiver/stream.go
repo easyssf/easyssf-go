@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -52,18 +53,18 @@ func StreamStatusOf(err error) int {
 	return 0
 }
 
-// IssuerMismatchError says that the transmitter created a stream whose issuer is not the issuer
-// the transmitter metadata was obtained from (SSF 1.0, section 8.1.1.1). Such a stream must not
-// be used.
+// IssuerMismatchError says that the transmitter returned a stream whose issuer is not the issuer
+// the transmitter metadata was obtained from (SSF 1.0, section 8.1.1). Such a stream must not be
+// used: its SETs would not verify.
 type IssuerMismatchError struct {
 	// ExpectedIssuer is the issuer of the transmitter.
 	ExpectedIssuer string
-	// Stream is the stream the transmitter created, for example to delete it.
+	// Stream is the stream the transmitter returned, for example to delete it if it was created.
 	Stream *ssf.StreamConfiguration
 }
 
 func (e *IssuerMismatchError) Error() string {
-	return fmt.Sprintf("The transmitter created stream %s with the issuer %q instead of %q", e.Stream.StreamID(), e.Stream.Issuer(), e.ExpectedIssuer)
+	return fmt.Sprintf("The transmitter returned stream %s with the issuer %q instead of %q", e.Stream.StreamID(), e.Stream.Issuer(), e.ExpectedIssuer)
 }
 
 func streamCall(status int, cause error, format string, args ...any) error {
@@ -72,10 +73,14 @@ func streamCall(status int, cause error, format string, args ...any) error {
 
 // StreamClient calls the stream management API of one transmitter (SSF 1.0, section 8.1):
 // configuration, status, subjects and verification. The endpoints are discovered from the
-// transmitter metadata.
+// transmitter metadata. Every stream configuration the transmitter returns is checked to carry
+// the issuer of the metadata (section 8.1.1, iss) before it is accepted, an IssuerMismatchError
+// otherwise: the SETs of a stream with another issuer would not verify.
 type StreamClient struct {
 	// Timeout is how long a call waits for the response; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// MaxResponseSize is the largest response read, in bytes; DefaultMaxResponseSize if zero.
+	MaxResponseSize int64
 	// Retry says how a failed call is tried again; not at all if zero.
 	Retry RetryOptions
 
@@ -117,12 +122,20 @@ func (c *StreamClient) Streams(ctx context.Context) ([]*ssf.StreamConfiguration,
 		streams := make([]*ssf.StreamConfiguration, 0, len(value))
 		for _, element := range value {
 			if claims := ssf.Object(element); claims != nil {
-				streams = append(streams, ssf.NewStreamConfiguration(claims))
+				stream, err := c.checkIssuer(ssf.NewStreamConfiguration(claims))
+				if err != nil {
+					return nil, err
+				}
+				streams = append(streams, stream)
 			}
 		}
 		return streams, nil
 	case map[string]any:
-		return []*ssf.StreamConfiguration{ssf.NewStreamConfiguration(value)}, nil
+		stream, err := c.checkIssuer(ssf.NewStreamConfiguration(value))
+		if err != nil {
+			return nil, err
+		}
+		return []*ssf.StreamConfiguration{stream}, nil
 	}
 	return nil, streamCall(0, nil, "The transmitter returned an invalid list of streams")
 }
@@ -137,12 +150,12 @@ func (c *StreamClient) Stream(ctx context.Context, streamID string) (*ssf.Stream
 	if err != nil {
 		return nil, err
 	}
-	return parseStream(body)
+	return c.parseStream(body)
 }
 
 // CreateStream creates a stream (POST configuration_endpoint), see ssf.PushStream and
 // ssf.PollStream. It returns an IssuerMismatchError if the transmitter created the stream with
-// another issuer than its own; the stream must not be used then.
+// another issuer than its own; the stream must not be used then, delete it.
 func (c *StreamClient) CreateStream(ctx context.Context, stream *ssf.StreamConfiguration) (*ssf.StreamConfiguration, error) {
 	endpoint, err := c.configurationEndpoint(ctx)
 	if err != nil {
@@ -152,14 +165,7 @@ func (c *StreamClient) CreateStream(ctx context.Context, stream *ssf.StreamConfi
 	if err != nil {
 		return nil, err
 	}
-	created, err := parseStream(body)
-	if err != nil {
-		return nil, err
-	}
-	if created.Issuer() != c.metadata.Issuer() {
-		return nil, &IssuerMismatchError{ExpectedIssuer: c.metadata.Issuer(), Stream: created}
-	}
-	return created, nil
+	return c.parseStream(body)
 }
 
 // UpdateStream updates the given members of a stream (PATCH configuration_endpoint), the
@@ -173,7 +179,7 @@ func (c *StreamClient) UpdateStream(ctx context.Context, streamID string, change
 	if err != nil {
 		return nil, err
 	}
-	return parseStream(body)
+	return c.parseStream(body)
 }
 
 // ReplaceStream replaces the configuration of a stream (PUT configuration_endpoint).
@@ -186,7 +192,7 @@ func (c *StreamClient) ReplaceStream(ctx context.Context, streamID string, strea
 	if err != nil {
 		return nil, err
 	}
-	return parseStream(body)
+	return c.parseStream(body)
 }
 
 // DeleteStream deletes a stream (DELETE configuration_endpoint?stream_id=).
@@ -290,7 +296,7 @@ func (c *StreamClient) exchange(ctx context.Context, method string, u *url.URL, 
 	if body != nil {
 		jsonBody, _ = json.Marshal(body)
 	}
-	response, err := exchange(ctx, c.client, c.authorizer, c.metadata.Policy(), c.Retry, c.Timeout, method, u, jsonBody)
+	response, err := exchange(ctx, c.client, c.authorizer, c.metadata.Policy(), c.Retry, c.Timeout, c.MaxResponseSize, method, u, jsonBody)
 	if err != nil {
 		return nil, streamCall(0, err, "%s %s failed", method, u)
 	}
@@ -300,12 +306,23 @@ func (c *StreamClient) exchange(ctx context.Context, method string, u *url.URL, 
 	return response.body, nil
 }
 
-func parseStream(body []byte) (*ssf.StreamConfiguration, error) {
+// parseStream parses a stream configuration the transmitter returned and checks its issuer.
+func (c *StreamClient) parseStream(body []byte) (*ssf.StreamConfiguration, error) {
 	claims, err := parseObject(body)
 	if err != nil {
 		return nil, err
 	}
-	return ssf.NewStreamConfiguration(claims), nil
+	return c.checkIssuer(ssf.NewStreamConfiguration(claims))
+}
+
+// checkIssuer accepts a stream of the transmitter the metadata was obtained from (SSF 1.0,
+// section 8.1.1, iss); the SETs of a stream with another issuer would not verify against that
+// transmitter's keys and issuer, so such a stream is refused wherever it comes from.
+func (c *StreamClient) checkIssuer(stream *ssf.StreamConfiguration) (*ssf.StreamConfiguration, error) {
+	if stream.Issuer() != c.metadata.Issuer() {
+		return nil, &IssuerMismatchError{ExpectedIssuer: c.metadata.Issuer(), Stream: stream}
+	}
+	return stream, nil
 }
 
 func parseStatus(body []byte) (*ssf.StreamStatus, error) {
@@ -545,10 +562,17 @@ const MaxStreamRetryDelay = 30 * time.Second
 // Start.
 type StreamRegistrar struct {
 	// DeleteOnShutdown deletes a stream this receiver manages at the transmitter when it stops.
+	// For a single instance only: the stream is shared, so the first instance to stop deletes it
+	// for the others.
 	DeleteOnShutdown bool
 	// InitialRetryDelay is the delay before the first retry, doubled up to MaxStreamRetryDelay;
 	// one second if zero.
 	InitialRetryDelay time.Duration
+	// StopTimeout is how long Stop waits for a registration in flight, 5 seconds if zero, and no
+	// longer than the context of Stop allows. A registration that takes longer, because its
+	// transport does not notice the cancellation, is left to finish on its own and publishes
+	// nothing.
+	StopTimeout time.Duration
 	// Log is where the registrar logs; discarded if nil.
 	Log *slog.Logger
 
@@ -556,6 +580,9 @@ type StreamRegistrar struct {
 	stream     *ReceiverStream
 	existingID string
 	desired    *ssf.StreamConfiguration
+
+	// lifecycle serializes Start and Stop, so that a Start waits for the deletes of a Stop
+	lifecycle sync.Mutex
 
 	mu        sync.Mutex
 	state     StreamRegistrarState
@@ -567,6 +594,22 @@ type StreamRegistrar struct {
 	// generation counts the Starts and Stops; a registration publishes its outcome only
 	// while the generation it began in is the current one
 	generation uint64
+	// startedIn is the generation the last Start began; the current generation is a running
+	// one when they are equal, one a Stop ended otherwise
+	startedIn uint64
+	// published says that a registration published the stream the receiver has since the last
+	// Stop, publishedIn in which generation: Stop deletes only such a stream, and a registration
+	// that outlived its generation learns whether the one that followed has published yet
+	published   bool
+	publishedIn uint64
+	// unadopted are streams created by registrations that outlived their generation while a
+	// later one ran that had not published yet. That one adopts such a stream if it finds it
+	// and deletes it once it publishes another; Stop deletes what is left.
+	unadopted []string
+	// deleting are the streams whose deletion is under way, marked under mu before the call: a
+	// registration does not adopt one of them, a slow delete would otherwise remove the stream
+	// that a registration that followed uses
+	deleting map[string]struct{}
 }
 
 // ErrRegistrationSuperseded is the error of a registration that completed after a later Start
@@ -574,6 +617,10 @@ type StreamRegistrar struct {
 // to an earlier generation and was not published. Register returns it; the registration did
 // not fail at the transmitter.
 var ErrRegistrationSuperseded = errors.New("the SSF stream registration was superseded")
+
+// DefaultStreamStopTimeout is how long StreamRegistrar.Stop waits for a registration in flight
+// when StopTimeout is zero.
+const DefaultStreamStopTimeout = 5 * time.Second
 
 // NewStreamRegistrarForExistingStream looks up the stream with the given identifier and makes
 // it known through stream.
@@ -623,11 +670,13 @@ func (r *StreamRegistrar) IsRunning() bool {
 	return r.cancel != nil
 }
 
-// Start starts looking up or registering the stream in the background; it returns at once.
-// Cancelling ctx or calling Stop ends the retries. Calling it again while running has no
-// effect; once ctx was cancelled, Start starts them again, also while the goroutine of the
-// earlier Start is still on its way out.
+// Start starts looking up or registering the stream in the background; it returns at once,
+// unless a Stop is under way, which it waits for. Cancelling ctx or calling Stop ends the
+// retries. Calling it again while running has no effect; once ctx was cancelled, Start starts
+// them again, also while the goroutine of the earlier Start is still on its way out.
 func (r *StreamRegistrar) Start(ctx context.Context) {
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cancel != nil && !closed(r.ended) {
@@ -635,6 +684,7 @@ func (r *StreamRegistrar) Start(ctx context.Context) {
 	}
 	r.state = StreamRegistering
 	r.generation++
+	r.startedIn = r.generation
 	ctx, r.cancel = context.WithCancel(ctx)
 	r.done = make(chan struct{})
 	r.ended = ctx.Done()
@@ -651,19 +701,30 @@ func closed(c <-chan struct{}) bool {
 	}
 }
 
-// Stop stops the background registration and, if DeleteOnShutdown says so, deletes a stream the
-// receiver manages, with ctx.
+// Stop stops the background registration, waiting for a registration in flight up to
+// StopTimeout, and, if DeleteOnShutdown says so, deletes the stream the receiver manages, with
+// ctx. Only a stream published since the last Stop is deleted, not again the one an earlier
+// Stop deleted; streams that superseded registrations created and left behind are deleted too.
 func (r *StreamRegistrar) Stop(ctx context.Context) {
+	r.lifecycle.Lock()
+	defer r.lifecycle.Unlock()
+	// a publication in progress completes first, under mu, so that the stream it publishes is
+	// the one deleted below; none starts afterwards, the generation moved on
 	r.mu.Lock()
 	cancel, done := r.cancel, r.done
 	r.cancel, r.done, r.ended = nil, nil, nil
 	r.generation++
+	published := r.published
+	r.published = false
+	unadopted := r.unadopted
+	r.unadopted = nil
+	r.markDeleting(unadopted)
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		<-done
+		r.await(ctx, done)
 	}
-	if r.DeleteOnShutdown && r.desired != nil {
+	if r.DeleteOnShutdown && r.desired != nil && published {
 		if streamID := r.stream.StreamID(); streamID != "" {
 			if err := r.client.DeleteStream(ctx, streamID); err != nil {
 				r.log().Warn("Could not delete SSF stream", "stream", streamID, "error", err)
@@ -671,6 +732,26 @@ func (r *StreamRegistrar) Stop(ctx context.Context) {
 				r.log().Info("Deleted SSF stream", "stream", streamID)
 			}
 		}
+	}
+	r.deleteOrphans(ctx, unadopted)
+}
+
+// await waits for the registration goroutine to end, StopTimeout at most and no longer than
+// ctx allows. A registration in flight ends with its cancelled request; one that completes
+// regardless finds that its generation is over and publishes nothing.
+func (r *StreamRegistrar) await(ctx context.Context, done <-chan struct{}) {
+	timeout := r.StopTimeout
+	if timeout <= 0 {
+		timeout = DefaultStreamStopTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		r.log().Warn("The registration of the SSF stream is still in progress; it publishes nothing")
+	case <-ctx.Done():
+		r.log().Warn("The registration of the SSF stream is still in progress; it publishes nothing")
 	}
 }
 
@@ -698,20 +779,20 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 		}
 		var mismatch *IssuerMismatchError
 		if errors.As(err, &mismatch) {
-			// trying again would only create another stream that must not be used
-			r.log().Error("Not using the SSF stream", "error", err)
-			r.setState(generation, StreamFailed, err.Error())
-			if streamID := mismatch.Stream.StreamID(); streamID != "" {
-				if err := r.client.DeleteStream(ctx, streamID); err != nil {
-					r.log().Warn("Could not delete SSF stream", "stream", streamID, "error", err)
-				}
+			// trying again would only find or create the same stream
+			if r.setState(generation, StreamFailed, err.Error()) {
+				r.log().Error("Not using the SSF stream", "error", err)
 			}
 			return
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		r.setState(generation, StreamRegistering, err.Error())
+		// a registration that a later Start or Stop superseded reports no error of its own over
+		// the one that followed
+		if !r.setState(generation, StreamRegistering, err.Error()) {
+			return
+		}
 		r.log().Warn("Could not set up the SSF stream, trying again", "retry_in", delay, "error", err)
 		select {
 		case <-ctx.Done():
@@ -724,15 +805,16 @@ func (r *StreamRegistrar) registerWithRetries(ctx context.Context, done chan str
 	}
 }
 
-// setState records the state of a registration of the given generation; a registration a
-// later Start or Stop superseded records nothing.
-func (r *StreamRegistrar) setState(generation uint64, state StreamRegistrarState, lastError string) {
+// setState records the state of a registration of the given generation and reports whether it
+// did; a registration a later Start or Stop superseded records nothing.
+func (r *StreamRegistrar) setState(generation uint64, state StreamRegistrarState, lastError string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.generation != generation {
-		return
+		return false
 	}
 	r.state, r.lastError = state, lastError
+	return true
 }
 
 func (r *StreamRegistrar) currentGeneration() uint64 {
@@ -742,6 +824,8 @@ func (r *StreamRegistrar) currentGeneration() uint64 {
 }
 
 // Register looks up or registers the stream once, on the caller's goroutine, and makes it known.
+// It returns an IssuerMismatchError if the stream has another issuer than the transmitter; a
+// stream created on the way is deleted again.
 func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguration, error) {
 	return r.register(ctx, r.currentGeneration())
 }
@@ -749,29 +833,49 @@ func (r *StreamRegistrar) Register(ctx context.Context) (*ssf.StreamConfiguratio
 // register registers the stream and publishes the result, unless the registration was
 // superseded meanwhile: its context ended, or a Start or Stop moved the generation on, and a
 // later registration may have published already. A superseded registration publishes nothing
-// and returns ErrRegistrationSuperseded.
+// and returns ErrRegistrationSuperseded; a stream it created is not left behind if
+// DeleteOnShutdown says so, see abandon.
 func (r *StreamRegistrar) register(ctx context.Context, generation uint64) (*ssf.StreamConfiguration, error) {
 	var stream *ssf.StreamConfiguration
 	var action string
+	var created bool
 	var err error
 	if r.desired == nil {
 		stream, err = r.client.Stream(ctx, r.existingID)
 		action = "Using"
 	} else {
-		stream, action, err = r.registerManaged(ctx)
+		stream, action, created, err = r.registerManaged(ctx)
 	}
 	if err != nil {
 		return nil, err
 	}
 	// the configuration and the state are published under the lock that Start and Stop move
-	// the generation under, so that a superseded registration cannot slip in between
+	// the generation under, so that a superseded registration cannot slip in between; streams
+	// are decided on under it and deleted after it, a slow transmitter must not hold up Stop
 	r.mu.Lock()
 	if r.generation != generation || ctx.Err() != nil {
+		orphans := r.abandon(generation, stream, created)
 		r.mu.Unlock()
+		r.deleteOrphans(context.WithoutCancel(ctx), orphans)
 		return nil, ErrRegistrationSuperseded
+	}
+	if _, deleting := r.deleting[stream.StreamID()]; deleting {
+		r.mu.Unlock()
+		// found by the look-up before a delete marked it: looked up again
+		return nil, streamCall(0, nil, "SSF stream %s is being deleted", stream.StreamID())
 	}
 	r.stream.SetConfiguration(stream)
 	r.state, r.lastError = StreamRegistered, ""
+	r.published, r.publishedIn = true, generation
+	// the streams superseded registrations left to this one and it did not adopt
+	var orphans []string
+	for _, unadopted := range r.unadopted {
+		if unadopted != stream.StreamID() {
+			orphans = append(orphans, unadopted)
+		}
+	}
+	r.unadopted = nil
+	r.markDeleting(orphans)
 	listeners := append([]func(*ssf.StreamConfiguration){}, r.listeners...)
 	r.mu.Unlock()
 	delivered := make([]string, 0, len(stream.EventsDelivered()))
@@ -787,34 +891,108 @@ func (r *StreamRegistrar) register(ctx context.Context, generation uint64) (*ssf
 	for _, listener := range listeners {
 		listener(stream)
 	}
+	r.deleteOrphans(context.WithoutCancel(ctx), orphans)
 	return stream, nil
 }
 
-func (r *StreamRegistrar) registerManaged(ctx context.Context) (*ssf.StreamConfiguration, string, error) {
+// abandon decides, under mu, what becomes of the stream of a superseded registration and
+// returns the streams to delete, marked as being deleted. Only a stream the registration
+// created and only with DeleteOnShutdown is cleaned up: without a later registration running,
+// it goes, as it would have on shutdown. With one, because Stop gave up waiting or the context
+// of Start ended before a restart, that one adopts the stream if it finds it, so it is left to
+// it while it has not published; once it has, the stream it uses is known and any other goes.
+func (r *StreamRegistrar) abandon(generation uint64, stream *ssf.StreamConfiguration, created bool) []string {
+	if !created || !r.DeleteOnShutdown || stream.StreamID() == "" {
+		return nil
+	}
+	streamID := stream.StreamID()
+	followed := r.generation != generation && r.startedIn == r.generation
+	switch {
+	case followed && !(r.published && r.publishedIn == r.generation):
+		r.unadopted = append(r.unadopted, streamID)
+		r.log().Debug("A superseded registration leaves the SSF stream it created to the one that followed", "stream", streamID)
+		return nil
+	case followed && streamID == r.stream.StreamID():
+		return nil
+	}
+	orphans := []string{streamID}
+	r.markDeleting(orphans)
+	return orphans
+}
+
+// markDeleting marks streams as being deleted, under mu.
+func (r *StreamRegistrar) markDeleting(streamIDs []string) {
+	if r.deleting == nil && len(streamIDs) > 0 {
+		r.deleting = map[string]struct{}{}
+	}
+	for _, streamID := range streamIDs {
+		r.deleting[streamID] = struct{}{}
+	}
+}
+
+// deleteOrphans deletes streams that registrations created and the receiver does not use;
+// called without mu, as the transmitter may be slow.
+func (r *StreamRegistrar) deleteOrphans(ctx context.Context, streamIDs []string) {
+	for _, streamID := range streamIDs {
+		r.log().Info("Deleting SSF stream, created by a registration that was superseded before it could publish it", "stream", streamID)
+		r.deleteQuietly(ctx, streamID)
+		r.mu.Lock()
+		delete(r.deleting, streamID)
+		r.mu.Unlock()
+	}
+}
+
+func (r *StreamRegistrar) deleteQuietly(ctx context.Context, streamID string) {
+	if err := r.client.DeleteStream(ctx, streamID); err != nil {
+		r.log().Warn("Could not delete SSF stream", "stream", streamID, "error", err)
+	}
+}
+
+// deletingStreams are the streams a delete is under way for, to leave them out of a look-up.
+func (r *StreamRegistrar) deletingStreams() map[string]struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.deleting)
+}
+
+// registerManaged finds, updates or creates the stream and says whether it created it.
+func (r *StreamRegistrar) registerManaged(ctx context.Context) (*ssf.StreamConfiguration, string, bool, error) {
 	streams, err := r.client.Streams(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
+	deleting := r.deletingStreams()
 	for _, existing := range streams {
-		if !hasDesiredDelivery(existing, r.desired) {
+		if _, ok := deleting[existing.StreamID()]; ok || !hasDesiredDelivery(existing, r.desired) {
 			continue
 		}
 		if hasDesiredEvents(existing, r.desired) {
-			return existing, "Using existing", nil
+			return existing, "Using existing", false, nil
 		}
 		updated, err := r.client.UpdateStream(ctx, existing.StreamID(), changesFor(r.desired))
-		return updated, "Updated", err
+		return updated, "Updated", false, err
 	}
 	created, err := r.client.CreateStream(ctx, r.desired)
 	if err == nil {
-		return created, "Created", nil
+		return created, "Created", true, nil
+	}
+	var mismatch *IssuerMismatchError
+	if errors.As(err, &mismatch) {
+		// the stream was created but must not be used, and trying again would only create
+		// another one; deleted even if the registration is being stopped
+		if streamID := mismatch.Stream.StreamID(); streamID != "" {
+			r.deleteQuietly(context.WithoutCancel(ctx), streamID)
+		}
+		return nil, "", false, err
 	}
 	// the transmitter allows a single stream per receiver and it is configured differently
 	if StreamStatusOf(err) == http.StatusConflict && len(streams) == 1 {
-		updated, err := r.client.UpdateStream(ctx, streams[0].StreamID(), changesFor(r.desired))
-		return updated, "Updated", err
+		if _, ok := deleting[streams[0].StreamID()]; !ok {
+			updated, err := r.client.UpdateStream(ctx, streams[0].StreamID(), changesFor(r.desired))
+			return updated, "Updated", false, err
+		}
 	}
-	return nil, "", err
+	return nil, "", false, err
 }
 
 func hasDesiredEvents(stream, desired *ssf.StreamConfiguration) bool {

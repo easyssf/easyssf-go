@@ -142,6 +142,7 @@ type TestTransmitter struct {
 	longPollHold         time.Duration
 	validAccessToken     string
 	streamIssuer         string
+	severalStreams       bool
 	userAgent            string
 	queuedChanged        chan struct{} // closed and replaced whenever a SET is queued
 }
@@ -220,6 +221,14 @@ func (t *TestTransmitter) SetStreamIssuer(issuer string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.streamIssuer = issuer
+}
+
+// SetSeveralStreamsAllowed lets the transmitter create a stream per request. By default it
+// allows one stream per receiver and answers a second create request with 409, as Keycloak does.
+func (t *TestTransmitter) SetSeveralStreamsAllowed(allowed bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.severalStreams = allowed
 }
 
 // SetLongPollHold is how long a poll request without returnImmediately: true is held while no
@@ -331,6 +340,7 @@ func (t *TestTransmitter) Reset() {
 	t.available.Store(true)
 	t.validAccessToken = AccessToken
 	t.streamIssuer = ""
+	t.severalStreams = false
 	t.wakePolls()
 }
 
@@ -639,7 +649,7 @@ func (t *TestTransmitter) handleStreams(w http.ResponseWriter, method, streamID 
 	case http.MethodPost:
 		t.mu.Lock()
 		defer t.mu.Unlock()
-		if len(t.streams) > 0 {
+		if len(t.streams) > 0 && !t.severalStreams {
 			respondJSON(w, http.StatusConflict, ssf.Claims{"error": "stream_error", "error_description": "Only one stream per receiver is allowed"})
 			return
 		}

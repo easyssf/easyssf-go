@@ -239,7 +239,7 @@ func retrying(ctx context.Context, options RetryOptions, call func(ctx context.C
 		if err == nil && !options.retryable(response.status) {
 			return response, nil
 		}
-		if err != nil && errors.Is(err, context.Canceled) {
+		if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, ErrResponseTooLarge)) {
 			return nil, err
 		}
 		wait := delay

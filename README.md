@@ -164,7 +164,19 @@ easyssf:
 ```
 
 The audience of the stream is learned from the registration, so `expected-audience` is not needed;
-until the stream is registered, SETs are left for redelivery (`503`). Several transmitters go under
+until the stream is registered, SETs are left for redelivery (`503`). Every stream the
+transmitter returns must carry its issuer, or the stream is not used: its SETs would not verify.
+
+- **Several instances** register under the same credentials and reuse the one stream, as the
+  registrar finds it on startup. Several instances that start at the same time against a
+  transmitter with no stream yet may each create one, unless the transmitter allows a single
+  stream per receiver (Keycloak does); every event is then delivered once per stream, with a `jti`
+  of its own, which the dedup store cannot tell apart. Start one instance first, or let the
+  transmitter manage the stream.
+- **`stream.delete-on-shutdown` is for a single instance**: the stream is shared, so the first
+  instance to stop deletes it for the others, and the next one to start creates a new stream with
+  a new audience.
+ Several transmitters go under
 `easyssf.receiver.transmitters.<name>`, each with the same settings; the one at `easyssf.receiver`
 is named `default`, and the push endpoint authenticates each by its own header.
 `receiver.WithTransmitterCustomizer` replaces parts of any transmitter before it is assembled.
@@ -183,8 +195,11 @@ doubling up to five seconds or the `Retry-After` the transmitter sends
 turns it off). Poll requests are not retried: the poller has its interval and pauses on
 `Retry-After`. The stream registrar keeps retrying a failed registration regardless.
 
-Every endpoint of a transmitter, configured or taken from its metadata or stream, must use
-`https`, or `http` on loopback (`allow-insecure-http` lifts that, for development only). A
+Every endpoint of a transmitter, configured or taken from its metadata or stream, the poll
+endpoint included, must use `https`, or `http` on loopback (`allow-insecure-http` lifts that, for
+development only); the poll endpoint is checked before every request, as the access token goes
+there. A response body larger than `easyssf.receiver.http.max-response-size` (`"4MB"` by
+default) fails the call without being buffered. A
 redirect is followed only within the origin of the request, the same scheme, host and port, and
 only to a scheme the policy allows, whatever the `http.Client` passed in would do: an `https`
 endpoint cannot send the receiver's token to `http`, to another host or to another port.

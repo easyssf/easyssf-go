@@ -211,6 +211,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	issuer := strings.TrimSpace(config.TransmitterIssuer)
 	policy := config.URIPolicy()
 	timeout := r.config.HTTP.Timeout.Std()
+	maxResponseSize := r.config.HTTP.MaxResponseSize.Bytes()
 	retry := r.config.HTTP.Retry.Options()
 	var metadataURL *url.URL
 	if config.TransmitterMetadataURL != "" {
@@ -224,7 +225,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	if err != nil {
 		return nil, err
 	}
-	metadata.Timeout, metadata.Retry = timeout, retry
+	metadata.Timeout, metadata.MaxResponseSize, metadata.Retry = timeout, maxResponseSize, retry
 	// the configured headers go with every call, also those for metadata and keys that need no
 	// token
 	var headers Authorizer = NoAuthorization{}
@@ -241,11 +242,11 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		r.log.Warn(prefix+"allow-insecure-http is on, the SSF transmitter is used without TLS. For development only", "transmitter", r.describe(name, issuer))
 	}
 
-	tokens := r.tokenProvider(config, timeout, o)
+	tokens := r.tokenProvider(config, timeout, maxResponseSize, o)
 	authorizer := Authorizers{headers, BearerToken(tokens)}
 	stream := NewReceiverStream()
 	streamClient := NewStreamClient(metadata, r.client, authorizer)
-	streamClient.Timeout, streamClient.Retry = timeout, retry
+	streamClient.Timeout, streamClient.MaxResponseSize, streamClient.Retry = timeout, maxResponseSize, retry
 	verification := NewStreamVerification(stream.StreamID)
 	verification.Log = r.log
 
@@ -261,7 +262,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 			return nil, err
 		}
 		source := NewHTTPJWKSetSource(r.client, u)
-		source.Clock, source.Timeout = o.clock, timeout
+		source.Clock, source.Timeout, source.MaxResponseSize = o.clock, timeout, maxResponseSize
 		source.Authorizer, source.Retry, source.Policy = headers, retry, policy
 		transmitter.Keys = source
 	} else {
@@ -275,7 +276,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 			}
 			return resolved.JWKSURI(), nil
 		})
-		source.Clock, source.Timeout = o.clock, timeout
+		source.Clock, source.Timeout, source.MaxResponseSize = o.clock, timeout, maxResponseSize
 		source.Authorizer, source.Retry, source.Policy = headers, retry, policy
 		transmitter.Keys = source
 	}
@@ -344,6 +345,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 		pollerOptions.RateLimitFallback = poll.RateLimit.FallbackBackoff.Std()
 		pollerOptions.MaxPause = poll.RateLimit.MaxBackoff.Std()
 		pollerOptions.Timeout = timeout
+		pollerOptions.MaxResponseSize = maxResponseSize
 		pollerOptions.Policy = policy
 		pollerOptions.Clock = o.clock
 		pollerOptions.Log = r.log
@@ -362,7 +364,7 @@ func (r *Receiver) buildTransmitter(name string, config TransmitterConfig, o opt
 	return transmitter, nil
 }
 
-func (r *Receiver) tokenProvider(config TransmitterConfig, timeout time.Duration, o options) TokenProvider {
+func (r *Receiver) tokenProvider(config TransmitterConfig, timeout time.Duration, maxResponseSize int64, o options) TokenProvider {
 	if token := strings.TrimSpace(config.TransmitterAccessToken); token != "" {
 		return FixedToken(token)
 	}
@@ -380,6 +382,7 @@ func (r *Receiver) tokenProvider(config TransmitterConfig, timeout time.Duration
 	options.ExpirySafetyWindow = config.OAuth2.ExpirySafetyWindow.Std()
 	options.AdditionalParameters = config.OAuth2.AdditionalParameters
 	options.Timeout = timeout
+	options.MaxResponseSize = maxResponseSize
 	options.Clock = o.clock
 	return NewClientCredentialsTokenProvider(r.client, tokenURL, config.OAuth2.ClientID, config.OAuth2.ClientSecret, options)
 }

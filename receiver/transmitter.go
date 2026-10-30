@@ -31,9 +31,15 @@ const WellKnownPath = "/.well-known/ssf-configuration"
 // a margin instead.
 const DefaultHTTPTimeout = 5 * time.Second
 
-// maxResponseSize bounds what the receiver reads from the transmitter: metadata, JWK Sets and
-// poll responses are small, and an endpoint must not be able to exhaust the receiver's memory.
-const maxResponseSize = 4 << 20
+// DefaultMaxResponseSize bounds what the receiver reads from the transmitter when nothing else is
+// configured: 4 MiB, as in the Java library. Metadata, JWK Sets, stream configurations and poll
+// responses stay far below it, and an endpoint must not be able to exhaust the receiver's memory.
+const DefaultMaxResponseSize int64 = 4 << 20
+
+// ErrResponseTooLarge is the error of a call whose response body is larger than the configured
+// maximum (easyssf.receiver.http.max-response-size). The body is not buffered and the call fails
+// as if no response was received; it is not tried again, the transmitter would send the same.
+var ErrResponseTooLarge = errors.New("the response of the SSF transmitter is larger than the maximum")
 
 // URIPolicy says what the issuer of a transmitter and the endpoints it publishes must look like.
 // SSF requires https and an issuer without query or fragment. Loopback addresses (localhost,
@@ -177,6 +183,9 @@ func DeriveMetadataURLs(issuer string) ([]*url.URL, error) {
 type MetadataResolver struct {
 	// Timeout is how long a fetch waits for the response; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// MaxResponseSize is the largest metadata document read, in bytes; DefaultMaxResponseSize if
+	// zero.
+	MaxResponseSize int64
 	// Authorizer adds what the fetch needs, for example an API key; nothing if nil.
 	Authorizer Authorizer
 	// Retry says how a failed fetch is tried again; not at all if zero.
@@ -238,7 +247,7 @@ func (r *MetadataResolver) Resolve(ctx context.Context) (*ssf.TransmitterMetadat
 	if r.metadata != nil {
 		return r.metadata, nil
 	}
-	var failures []string
+	var failures joinedErrors
 	for _, u := range r.urls {
 		metadata, err := r.fetch(ctx, u)
 		if err == nil {
@@ -247,13 +256,27 @@ func (r *MetadataResolver) Resolve(ctx context.Context) (*ssf.TransmitterMetadat
 			return metadata, nil
 		}
 		r.log.Debug("Could not resolve SSF transmitter metadata", "url", u.String(), "error", err)
-		failures = append(failures, u.String()+": "+err.Error())
+		failures = append(failures, fmt.Errorf("%s: %w", u, err))
 	}
-	return nil, Unavailable(nil, "could not resolve SSF transmitter metadata from %s", strings.Join(failures, "; "))
+	return nil, &TransmitterUnavailableError{Message: "could not resolve SSF transmitter metadata", Cause: failures}
 }
 
+// joinedErrors are several errors in one line, separated by "; ", that errors.Is and errors.As
+// see each of.
+type joinedErrors []error
+
+func (e joinedErrors) Error() string {
+	messages := make([]string, 0, len(e))
+	for _, err := range e {
+		messages = append(messages, err.Error())
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (e joinedErrors) Unwrap() []error { return e }
+
 func (r *MetadataResolver) fetch(ctx context.Context, u *url.URL) (*ssf.TransmitterMetadata, error) {
-	body, err := getJSON(WithEndpoint(ctx, EndpointMetadata), r.client, r.Authorizer, r.policy, r.Retry, r.Timeout, u, "application/json")
+	body, err := getJSON(WithEndpoint(ctx, EndpointMetadata), r.client, r.Authorizer, r.policy, r.Retry, r.Timeout, r.MaxResponseSize, u, "application/json")
 	if err != nil {
 		return nil, err
 	}
@@ -318,13 +341,17 @@ type httpResponse struct {
 func (r *httpResponse) successful() bool { return r.status >= 200 && r.status < 300 }
 
 // send performs one request, authorized by authorizer if not nil, and returns the response
-// whatever its status; an error means no response was received. The body is bounded by
-// maxResponseSize. The request waits timeout (DefaultHTTPTimeout if zero) unless ctx has an
-// earlier deadline. A redirect is followed only to the same host and only where policy allows,
-// see URIPolicy.CheckRedirect.
-func send(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, timeout time.Duration, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
+// whatever its status; an error means no response was received. A body larger than
+// maxResponseSize (DefaultMaxResponseSize if zero) fails the call with ErrResponseTooLarge. The
+// request waits timeout (DefaultHTTPTimeout if zero) unless ctx has an earlier deadline. A
+// redirect is followed only to the same host and only where policy allows, see
+// URIPolicy.CheckRedirect.
+func send(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, timeout time.Duration, maxResponseSize int64, method string, u *url.URL, headers map[string]string, body []byte) (*httpResponse, error) {
 	if timeout <= 0 {
 		timeout = DefaultHTTPTimeout
+	}
+	if maxResponseSize <= 0 {
+		maxResponseSize = DefaultMaxResponseSize
 	}
 	client = policy.redirecting(client)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -349,18 +376,25 @@ func send(ctx context.Context, client *http.Client, authorizer Authorizer, polic
 	if err != nil {
 		return nil, err
 	}
+	// closing the body ends a response that is cut off early
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
+	if response.ContentLength > maxResponseSize {
+		return nil, fmt.Errorf("%w (%d bytes): %d bytes from %s", ErrResponseTooLarge, maxResponseSize, response.ContentLength, u.Redacted())
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(data)) > maxResponseSize {
+		return nil, fmt.Errorf("%w (%d bytes): from %s", ErrResponseTooLarge, maxResponseSize, u.Redacted())
 	}
 	return &httpResponse{status: response.StatusCode, header: response.Header, body: data}, nil
 }
 
 // getJSON performs a GET, tried again per retry, and returns the body of a 2xx response.
-func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, u *url.URL, accept string) ([]byte, error) {
+func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, maxResponseSize int64, u *url.URL, accept string) ([]byte, error) {
 	response, err := retrying(ctx, retry, func(ctx context.Context) (*httpResponse, error) {
-		return send(ctx, client, authorizer, policy, timeout, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
+		return send(ctx, client, authorizer, policy, timeout, maxResponseSize, http.MethodGet, u, map[string]string{"Accept": accept}, nil)
 	})
 	if err != nil {
 		return nil, err
@@ -376,13 +410,13 @@ func getJSON(ctx context.Context, client *http.Client, authorizer Authorizer, po
 // 401 and the authorizer can invalidate its token: the access token expired or was revoked. The
 // response comes back whatever its status; an error means the request could not be authorized
 // or no response was received.
-func exchange(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
+func exchange(ctx context.Context, client *http.Client, authorizer Authorizer, policy URIPolicy, retry RetryOptions, timeout time.Duration, maxResponseSize int64, method string, u *url.URL, jsonBody []byte) (*httpResponse, error) {
 	headers := map[string]string{"Accept": "application/json"}
 	if jsonBody != nil {
 		headers["Content-Type"] = "application/json"
 	}
 	call := func(ctx context.Context) (*httpResponse, error) {
-		return send(ctx, client, authorizer, policy, timeout, method, u, headers, jsonBody)
+		return send(ctx, client, authorizer, policy, timeout, maxResponseSize, method, u, headers, jsonBody)
 	}
 	response, err := retrying(ctx, retry, call)
 	if err != nil {
@@ -445,6 +479,9 @@ type ClientCredentialsOptions struct {
 	Policy URIPolicy
 	// Timeout is how long the token request waits; DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// MaxResponseSize is the largest token response read, in bytes; DefaultMaxResponseSize if
+	// zero.
+	MaxResponseSize int64
 	// Clock is the clock the expiry is measured by.
 	Clock Clock
 }
@@ -518,7 +555,7 @@ func (p *ClientCredentialsTokenProvider) requestToken(ctx context.Context) (stri
 	} else {
 		headers["Authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(url.QueryEscape(p.clientID)+":"+url.QueryEscape(p.clientSecret)))
 	}
-	response, err := send(WithEndpoint(ctx, EndpointToken), p.client, nil, p.options.Policy, p.options.Timeout, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
+	response, err := send(WithEndpoint(ctx, EndpointToken), p.client, nil, p.options.Policy, p.options.Timeout, p.options.MaxResponseSize, http.MethodPost, p.tokenURL, headers, []byte(form.Encode()))
 	if err != nil {
 		return "", time.Time{}, Unavailable(err, "could not obtain an access token for the SSF transmitter from %s", p.tokenURL)
 	}

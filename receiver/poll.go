@@ -180,6 +180,9 @@ type PollerOptions struct {
 	// Timeout is how long a request that is answered immediately waits for the response;
 	// DefaultHTTPTimeout if zero.
 	Timeout time.Duration
+	// MaxResponseSize is the largest poll response read, in bytes; DefaultMaxResponseSize if
+	// zero. MaxEvents SETs must fit.
+	MaxResponseSize int64
 	// Clock is the clock the pauses the transmitter asks for are measured by.
 	Clock Clock
 	// Log is where the poller logs; discarded if nil.
@@ -335,6 +338,9 @@ func (p *Poller) Stop(ctx context.Context) {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
+			// a handler is still running; the goroutine ends once it returns, as its context
+			// is cancelled
+			p.log.Warn("The polling goroutine is still handling a SET; it ends after the handlers return")
 		}
 	}
 	if p.options.FlushOnStop {
@@ -503,11 +509,6 @@ func (p *Poller) poll(ctx context.Context, hold bool) (pollResult, error) {
 		p.log.Debug("Not polling, the poll endpoint of the SSF stream is not known yet")
 		return pollResult{skipped: true, endpointUnknown: true}, nil
 	}
-	// the endpoint of a registered stream comes from the transmitter: checked like a configured
-	// one, the receiver's token must not go to http
-	if err := p.options.Policy.CheckEndpoint(endpoint, "the poll endpoint of the SSF stream"); err != nil {
-		return pollResult{}, err
-	}
 	if until := p.PausedUntil(); !until.IsZero() {
 		p.log.Debug("Not polling, the SSF transmitter asked to wait", "until", until)
 		return pollResult{skipped: true}, nil
@@ -604,9 +605,15 @@ func (p *Poller) reportPending(ctx context.Context, key string) {
 }
 
 // request sends one poll request with the pending acknowledgements and returns the parsed
-// response body.
+// response body. Every poll request goes through it, the one that flushes the acknowledgements
+// on Stop included, so the endpoint is checked here.
 func (p *Poller) request(ctx context.Context, endpoint *url.URL, key string, maxEvents int, returnImmediately bool) (ssf.Claims, error) {
 	options := p.options
+	// the endpoint of a registered stream comes from the transmitter and may change: checked
+	// like a configured one, the receiver's token must not go to http
+	if err := options.Policy.CheckEndpoint(endpoint, "the poll endpoint of the SSF stream"); err != nil {
+		return nil, err
+	}
 	pending, err := options.AckStore.Pending(ctx, key, options.MaxAckBatch)
 	if err != nil {
 		return nil, &PollError{Message: "Could not read the pending acknowledgements", Cause: err}
@@ -638,7 +645,7 @@ func (p *Poller) request(ctx context.Context, endpoint *url.URL, key string, max
 	}
 	started := time.Now()
 	// not retried: the poller has its interval, and a 429 or 503 pauses it below
-	response, err := exchange(WithEndpoint(ctx, EndpointPoll), p.client, p.authorizer, p.options.Policy, RetryOptions{}, timeout, http.MethodPost, endpoint, jsonBody)
+	response, err := exchange(WithEndpoint(ctx, EndpointPoll), p.client, p.authorizer, p.options.Policy, RetryOptions{}, timeout, options.MaxResponseSize, http.MethodPost, endpoint, jsonBody)
 	if err != nil {
 		options.Metrics.PollCompleted(options.Transmitter, time.Since(started), false)
 		return nil, &PollError{Message: fmt.Sprintf("Poll request to %s failed", endpoint), Cause: err}

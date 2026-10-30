@@ -3,8 +3,10 @@ package receiver
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +48,55 @@ func (d *Duration) UnmarshalText(text []byte) error {
 
 // MarshalText formats like time.Duration.
 func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
+
+// ByteSize is a number of bytes that binds from "4MB" / "512KB" strings, as Spring's DataSize
+// does: the units B, KB, MB, GB and TB are binary multiples, a plain number is bytes. It binds
+// in JSON, YAML and mapstructure (through encoding.TextUnmarshaler), a JSON number as well.
+type ByteSize int64
+
+// Bytes is the size in bytes.
+func (b ByteSize) Bytes() int64 { return int64(b) }
+
+// String formats in the largest unit the size is a whole multiple of: "4MB", "1536KB", "10B".
+func (b ByteSize) String() string {
+	units := []string{"TB", "GB", "MB", "KB"}
+	for i, unit := range units {
+		multiple := int64(1) << (10 * (len(units) - i))
+		if b != 0 && int64(b)%multiple == 0 {
+			return strconv.FormatInt(int64(b)/multiple, 10) + unit
+		}
+	}
+	return strconv.FormatInt(int64(b), 10) + "B"
+}
+
+// UnmarshalText parses "4MB", "512KB", "1048576B" or "1048576"; the unit is case-insensitive.
+func (b *ByteSize) UnmarshalText(text []byte) error {
+	value := strings.ToUpper(strings.TrimSpace(string(text)))
+	number, shift := value, 0
+	for i, unit := range []string{"TB", "GB", "MB", "KB", "B"} {
+		if strings.HasSuffix(value, unit) {
+			number, shift = strings.TrimSpace(strings.TrimSuffix(value, unit)), 10*(4-i)
+			break
+		}
+	}
+	parsed, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || parsed < 0 || parsed > math.MaxInt64>>shift {
+		return fmt.Errorf("not a data size such as \"4MB\": %q", string(text))
+	}
+	*b = ByteSize(parsed << shift)
+	return nil
+}
+
+// UnmarshalJSON takes a string such as "4MB" or a number of bytes.
+func (b *ByteSize) UnmarshalJSON(data []byte) error {
+	if text, err := strconv.Unquote(string(data)); err == nil {
+		return b.UnmarshalText([]byte(text))
+	}
+	return b.UnmarshalText(data)
+}
+
+// MarshalText formats like String.
+func (b ByteSize) MarshalText() ([]byte, error) { return []byte(b.String()), nil }
 
 // Config is the configuration of the receiver, bound from easyssf.receiver.
 type Config struct {
@@ -243,6 +294,10 @@ type HTTPConfig struct {
 	// UserAgent is the User-Agent header to send with calls to the transmitter; Go's default
 	// when empty.
 	UserAgent string `json:"user-agent" yaml:"user-agent" mapstructure:"user-agent"`
+	// MaxResponseSize is the largest response body accepted from the transmitter (metadata, JWK
+	// Set, stream configuration, poll response, token), 4MB by default; a larger one fails the
+	// call as if the transmitter were unavailable, without being buffered.
+	MaxResponseSize ByteSize `json:"max-response-size" yaml:"max-response-size" mapstructure:"max-response-size"`
 	// Retry is how a management, metadata or JWK Set call that fails with a connection error or
 	// 408, 429, 500, 502, 503 or 504 is tried again. Poll requests are not retried, the poller
 	// has its interval.
@@ -406,7 +461,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:            true,
 		TransmitterConfig:  DefaultTransmitterConfig(),
-		HTTP:               HTTPConfig{Timeout: D(DefaultHTTPTimeout), Retry: RetryConfig{MaxRetries: 2, InitialBackoff: D(250 * time.Millisecond), MaxBackoff: D(5 * time.Second)}},
+		HTTP:               HTTPConfig{Timeout: D(DefaultHTTPTimeout), MaxResponseSize: ByteSize(DefaultMaxResponseSize), Retry: RetryConfig{MaxRetries: 2, InitialBackoff: D(250 * time.Millisecond), MaxBackoff: D(5 * time.Second)}},
 		Dedup:              DedupConfig{Enabled: true, Capacity: 10_000, Retention: D(7 * 24 * time.Hour), Lease: D(DefaultDedupLease)},
 		Revocation:         RevocationConfig{Enabled: true, TTL: D(24 * time.Hour)},
 		SessionTermination: SessionTerminationConfig{Enabled: true},
@@ -492,6 +547,9 @@ func (c *Config) Validate() error {
 	}
 	if c.HTTP.Timeout <= 0 {
 		failures = append(failures, ConfigurationSection+".http.timeout: must be positive")
+	}
+	if c.HTTP.MaxResponseSize <= 0 {
+		failures = append(failures, ConfigurationSection+".http.max-response-size: must be positive")
 	}
 	if c.HTTP.Retry.MaxRetries < 0 || c.HTTP.Retry.InitialBackoff < 0 || c.HTTP.Retry.MaxBackoff < 0 {
 		failures = append(failures, ConfigurationSection+".http.retry: max-retries, initial-backoff and max-backoff must not be negative")

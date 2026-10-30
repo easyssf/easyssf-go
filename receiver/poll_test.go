@@ -365,6 +365,44 @@ func TestStopFlushesThePendingAcknowledgements(t *testing.T) {
 	}
 }
 
+// roundTripperFunc is an http.RoundTripper made of a function.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestStopDoesNotFlushToAPollEndpointThePolicyForbids(t *testing.T) {
+	transmitter := ssftest.New()
+	store := receiver.NewInMemoryPollAckStore()
+	options := receiver.DefaultPollerOptions()
+	options.AckStore = store
+	options.Transmitter = transmitter.Issuer()
+	options.Interval = time.Minute
+	var endpoint atomic.Pointer[url.URL]
+	endpoint.Store(pollURL(t, transmitter))
+	var insecureRequests atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme == "http" {
+			insecureRequests.Add(1)
+		}
+		return transmitter.Client.Transport.RoundTrip(r)
+	})}
+	p := receiver.NewPoller(client, receiver.FixedToken(ssftest.AccessToken), endpoint.Load, processor(t, transmitter), options)
+	p.Start(ctx)
+	ssftest.Eventually(t, 2*time.Second, "the first poll", func() bool { return transmitter.PollRequests() == 1 })
+	_ = store.Record(ctx, transmitter.Issuer(), receiver.Ack("owed"))
+	// the stream moved its poll endpoint to plain http meanwhile
+	insecure := *pollURL(t, transmitter)
+	insecure.Scheme = "http"
+	endpoint.Store(&insecure)
+	p.Stop(ctx)
+	if insecureRequests.Load() != 0 {
+		t.Fatal("the acknowledgements and the token went to an http poll endpoint")
+	}
+	if size, _ := store.Size(ctx, transmitter.Issuer()); size != 1 {
+		t.Fatal("the acknowledgement was dropped")
+	}
+}
+
 func TestLongPollIsHeldUntilASetArrives(t *testing.T) {
 	transmitter := ssftest.New()
 	transmitter.SetLongPollHold(10 * time.Second)

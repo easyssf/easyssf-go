@@ -545,3 +545,455 @@ func TestRegistrarStartsAgainAfterTheContextOfStartWasCancelled(t *testing.T) {
 	ssftest.Eventually(t, 5*time.Second, "the stream", func() bool { return registrar.State() == receiver.StreamRegistered })
 	registrar.Stop(ctx)
 }
+
+func TestRefusesExistingStreamsWithAnotherIssuer(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetStreamIssuer("https://other.example")
+	streamID := transmitter.AddStream(ssf.PollStream([]string{"CaepSessionRevoked"}, "").Claims())["stream_id"].(string)
+	client := streamClient(t, transmitter)
+	_, getErr := client.Stream(ctx, streamID)
+	_, listErr := client.Streams(ctx)
+	_, updateErr := client.UpdateStream(ctx, streamID, ssf.Claims{"description": "x"})
+	_, replaceErr := client.ReplaceStream(ctx, streamID, ssf.PollStream([]string{"CaepSessionRevoked"}, ""))
+	for name, err := range map[string]error{"get": getErr, "list": listErr, "update": updateErr, "replace": replaceErr} {
+		var mismatch *receiver.IssuerMismatchError
+		if !errors.As(err, &mismatch) || mismatch.Stream.StreamID() != streamID {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestRegistrarGivesUpOnExistingStreamWithAnotherIssuerWithoutDeletingIt(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetStreamIssuer("https://other.example")
+	streamID := transmitter.AddStream(ssf.PollStream([]string{"CaepSessionRevoked"}, "").Claims())["stream_id"].(string)
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForExistingStream(streamClient(t, transmitter), stream, streamID)
+	registrar.InitialRetryDelay = 50 * time.Millisecond
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the registrar gave up", func() bool { return registrar.State() == receiver.StreamFailed })
+	registrar.Stop(ctx)
+	if !strings.Contains(registrar.LastError(), "https://other.example") || stream.StreamID() != "" {
+		t.Fatalf("%q", registrar.LastError())
+	}
+	// the stream is not this registrar's to delete
+	if len(transmitter.Streams()) != 1 {
+		t.Fatal("deleted")
+	}
+	// a managed stream finds it while it looks for its own, and leaves it alone as well
+	managed := receiver.NewStreamRegistrarForManagedStream(streamClient(t, transmitter), receiver.NewReceiverStream(), pushStream("CaepSessionRevoked"))
+	managed.DeleteOnShutdown = true
+	managed.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the registrar gave up", func() bool { return managed.State() == receiver.StreamFailed })
+	managed.Stop(ctx)
+	if len(transmitter.Streams()) != 1 {
+		t.Fatal("deleted")
+	}
+}
+
+func TestRegistrarStartIsIdempotentAndStopEndsTheRegistration(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetAvailable(false)
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return transmitter.Client.Transport.RoundTrip(r)
+	})}
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, receiver.FixedToken(ssftest.AccessToken)), stream, ssf.PollStream([]string{"CaepSessionRevoked"}, ""))
+	registrar.InitialRetryDelay = 20 * time.Millisecond
+	registrar.Start(ctx)
+	registrar.Start(ctx)
+	if !registrar.IsRunning() {
+		t.Fatal("not running")
+	}
+	ssftest.Eventually(t, 5*time.Second, "three attempts", func() bool { return calls.Load() >= 3 })
+	registrar.Stop(ctx)
+	registrar.Stop(ctx)
+	if registrar.IsRunning() {
+		t.Fatal("still running")
+	}
+	callsAtStop := calls.Load()
+	ssftest.During(t, 200*time.Millisecond, "no more attempts", func() bool { return calls.Load() == callsAtStop })
+	if stream.StreamID() != "" {
+		t.Fatal("registered")
+	}
+}
+
+// stall holds the first request to the configuration endpoint with its method that when, if
+// set, accepts, before or after it reached the transmitter, until release is closed.
+type stall struct {
+	method   string
+	after    bool // the request reaches the transmitter first, its response is held
+	when     func(*http.Request) bool
+	armed    atomic.Bool
+	streamID atomic.Value // the stream_id of the request held
+	held     chan struct{}
+	release  chan struct{}
+}
+
+func newStall(method string, after bool) *stall {
+	s := &stall{method: method, after: after, held: make(chan struct{}), release: make(chan struct{})}
+	s.armed.Store(true)
+	return s
+}
+
+func (s *stall) takes(r *http.Request) bool {
+	return r.Method == s.method && strings.HasSuffix(r.URL.Path, "/ssf/streams") && (s.when == nil || s.when(r)) && s.armed.CompareAndSwap(true, false)
+}
+
+func (s *stall) hold(r *http.Request) {
+	s.streamID.Store(r.URL.Query().Get("stream_id"))
+	close(s.held)
+	<-s.release
+}
+
+func waitFor(t *testing.T, c <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// deaf is an http.RoundTripper that does not notice the cancellation of a request, as some
+// transports do not, and holds the requests its stalls take.
+type deaf struct {
+	inner  http.RoundTripper
+	stalls []*stall
+}
+
+func (d *deaf) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.WithContext(context.WithoutCancel(r.Context()))
+	var taken *stall
+	for _, s := range d.stalls {
+		if s.takes(r) {
+			taken = s
+			break
+		}
+	}
+	if taken != nil && !taken.after {
+		taken.hold(r)
+	}
+	response, err := d.inner.RoundTrip(r)
+	if taken != nil && taken.after {
+		taken.hold(r)
+	}
+	return response, err
+}
+
+// deafRegistrar manages a poll stream through a deaf transport, deletes it on shutdown and
+// gives a registration in flight 200 milliseconds on Stop: the registrations of these tests
+// outlive their Stop on purpose.
+func deafRegistrar(t *testing.T, transmitter *ssftest.TestTransmitter, stalls ...*stall) (*receiver.StreamRegistrar, *receiver.ReceiverStream, *atomic.Int32) {
+	client := &http.Client{Transport: &deaf{inner: transmitter.Client.Transport, stalls: stalls}}
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, receiver.FixedToken(ssftest.AccessToken)), stream, ssf.PollStream([]string{"CaepSessionRevoked"}, ""))
+	registrar.DeleteOnShutdown = true
+	registrar.StopTimeout = 200 * time.Millisecond
+	registrar.InitialRetryDelay = 50 * time.Millisecond
+	var registered atomic.Int32
+	registrar.AddListener(func(*ssf.StreamConfiguration) { registered.Add(1) })
+	return registrar, stream, &registered
+}
+
+func streamIDs(transmitter *ssftest.TestTransmitter) []string {
+	streams := transmitter.Streams()
+	ids := make([]string, 0, len(streams))
+	for _, stream := range streams {
+		ids = append(ids, stream["stream_id"].(string))
+	}
+	return ids
+}
+
+func TestRegistrationThatCompletesAfterStopPublishesNothing(t *testing.T) {
+	transmitter := ssftest.New()
+	discovery := newStall(http.MethodGet, false)
+	registrar, stream, registered := deafRegistrar(t, transmitter, discovery)
+	registrar.StopTimeout = 10 * time.Second
+	registrar.Start(ctx)
+	waitFor(t, discovery.held, "the look-up")
+
+	var stopping atomic.Bool
+	stopping.Store(true)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		registrar.Stop(ctx)
+		stopping.Store(false)
+	}()
+	// Stop waits for the registration, which completes only once released
+	ssftest.During(t, 200*time.Millisecond, "Stop to wait", stopping.Load)
+	close(discovery.release)
+	waitFor(t, stopped, "Stop")
+
+	// the stream created on the way is deleted, as it would have been on shutdown
+	ssftest.Eventually(t, 5*time.Second, "the stream to be deleted", func() bool { return len(transmitter.Streams()) == 0 })
+	if registered.Load() != 0 || stream.StreamID() != "" || registrar.State() == receiver.StreamRegistered {
+		t.Fatal("published")
+	}
+}
+
+func TestStopWaitsForAPublicationInProgressAndDeletesTheStreamItPublished(t *testing.T) {
+	transmitter := ssftest.New()
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(streamClient(t, transmitter), stream, ssf.PollStream([]string{"CaepSessionRevoked"}, ""))
+	registrar.DeleteOnShutdown = true
+	publishing, release := make(chan struct{}), make(chan struct{})
+	var registered atomic.Value
+	registrar.AddListener(func(s *ssf.StreamConfiguration) {
+		// the registration published and tells its listeners when Stop is called
+		registered.Store(s.StreamID())
+		close(publishing)
+		<-release
+	})
+	registrar.Start(ctx)
+	waitFor(t, publishing, "the publication")
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		registrar.Stop(ctx)
+	}()
+	ssftest.During(t, 200*time.Millisecond, "Stop to wait", func() bool {
+		select {
+		case <-stopped:
+			return false
+		default:
+			return len(transmitter.Streams()) == 1
+		}
+	})
+	close(release)
+	waitFor(t, stopped, "Stop")
+
+	// the publication completed before Stop went on, so the stream it published is the one
+	// Stop deleted
+	if stream.StreamID() != registered.Load() || len(transmitter.Streams()) != 0 {
+		t.Fatalf("%v", streamIDs(transmitter))
+	}
+}
+
+func TestRegistrationThatOutlivesItsStopLeavesTheStreamToTheRegistrationThatFollowed(t *testing.T) {
+	transmitter := ssftest.New()
+	// the transmitter created the stream, but the transport does not return, nor does it notice
+	// the cancellation of Stop
+	create := newStall(http.MethodPost, true)
+	registrar, stream, registered := deafRegistrar(t, transmitter, create)
+	registrar.Start(ctx)
+	waitFor(t, create.held, "the create request")
+	created := streamIDs(transmitter)[0]
+
+	// Stop gives the first registration up after its timeout, Start begins a second one, which
+	// finds the stream the first created and adopts it
+	stopping := time.Now()
+	registrar.Stop(ctx)
+	if elapsed := time.Since(stopping); elapsed < 200*time.Millisecond {
+		t.Fatalf("Stop returned after %v", elapsed)
+	}
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the second registration", func() bool { return stream.StreamID() != "" })
+	if stream.StreamID() != created {
+		t.Fatal(stream.StreamID())
+	}
+
+	// the first registration returns at last: it neither publishes nor deletes the stream the
+	// second one uses
+	close(create.release)
+	ssftest.During(t, 300*time.Millisecond, "the stream to stay", func() bool { return len(transmitter.Streams()) == 1 })
+	if registered.Load() != 1 || registrar.State() != receiver.StreamRegistered {
+		t.Fatal("published twice")
+	}
+
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 {
+		t.Fatal("not deleted")
+	}
+}
+
+func TestRegistrationThatOutlivesItsStopDeletesTheStreamItCreatedAfterTheNextOnePublished(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetSeveralStreamsAllowed(true)
+	// the first registration stalls after it looked for streams and found none
+	discovery := newStall(http.MethodGet, true)
+	registrar, stream, _ := deafRegistrar(t, transmitter, discovery)
+	registrar.Start(ctx)
+	waitFor(t, discovery.held, "the look-up")
+
+	// Stop gives the first registration up, the second finds no stream and creates one
+	registrar.Stop(ctx)
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the second registration", func() bool { return stream.StreamID() != "" })
+	published := stream.StreamID()
+
+	// the first registration goes on to create a stream of its own, which nobody uses
+	close(discovery.release)
+	ssftest.Eventually(t, 5*time.Second, "the orphan to be deleted", func() bool { return len(transmitter.Streams()) == 1 })
+	ssftest.During(t, 300*time.Millisecond, "one stream", func() bool { return len(transmitter.Streams()) == 1 })
+	if streamIDs(transmitter)[0] != published || stream.StreamID() != published {
+		t.Fatalf("%v, published %s", streamIDs(transmitter), published)
+	}
+
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 {
+		t.Fatal("not deleted")
+	}
+}
+
+func TestStreamAStoppedRegistrationLeavesIsAdoptedByTheNextOneAndNotMistakenForAnEarlierOne(t *testing.T) {
+	transmitter := ssftest.New()
+	create := newStall(http.MethodPost, true)
+	create.armed.Store(false)
+	discovery := newStall(http.MethodGet, true)
+	discovery.armed.Store(false)
+	registrar, stream, _ := deafRegistrar(t, transmitter, create, discovery)
+	// a first registration published a stream and Stop deleted it; the receiver still
+	// remembers that stream, which must not pass for the one the next registration uses
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the first registration", func() bool { return stream.StreamID() != "" })
+	earlier := stream.StreamID()
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 || stream.StreamID() != earlier {
+		t.Fatal("deleted on Stop")
+	}
+
+	// the second registration creates a stream and stalls; Stop gives it up and the third finds
+	// that stream, and stalls before it publishes it
+	create.armed.Store(true)
+	registrar.Start(ctx)
+	waitFor(t, create.held, "the create request")
+	created := streamIDs(transmitter)[0]
+	registrar.Stop(ctx)
+	discovery.armed.Store(true)
+	registrar.Start(ctx)
+	waitFor(t, discovery.held, "the look-up")
+
+	// the second returns now: the third has not published, so the stream is left to it, not
+	// deleted for differing from the stream of the first
+	close(create.release)
+	ssftest.During(t, 300*time.Millisecond, "the stream to stay", func() bool { return len(transmitter.Streams()) == 1 })
+	close(discovery.release)
+	ssftest.Eventually(t, 5*time.Second, "the third registration", func() bool { return stream.StreamID() == created })
+	if len(transmitter.Streams()) != 1 || registrar.State() != receiver.StreamRegistered {
+		t.Fatal("adopted")
+	}
+
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 {
+		t.Fatal("not deleted")
+	}
+}
+
+func TestStreamAStoppedRegistrationCreatesAfterTheNextOneLookedIsDeletedOnceTheNextOnePublished(t *testing.T) {
+	transmitter := ssftest.New()
+	transmitter.SetSeveralStreamsAllowed(true)
+	// the first registration stalls after it looked and found no stream; the second finds none
+	// either, creates a stream and stalls before it publishes; the first then creates a stream
+	// nobody will adopt
+	discovery := newStall(http.MethodGet, true)
+	create := newStall(http.MethodPost, true)
+	create.armed.Store(false)
+	registrar, stream, _ := deafRegistrar(t, transmitter, discovery, create)
+	registrar.Start(ctx)
+	waitFor(t, discovery.held, "the look-up")
+	registrar.Stop(ctx)
+	create.armed.Store(true)
+	registrar.Start(ctx)
+	waitFor(t, create.held, "the create request")
+	published := streamIDs(transmitter)[0]
+
+	// the first creates its stream while the second has not published
+	close(discovery.release)
+	ssftest.Eventually(t, 5*time.Second, "the second stream", func() bool { return len(transmitter.Streams()) == 2 })
+	ssftest.During(t, 300*time.Millisecond, "both streams to stay", func() bool { return len(transmitter.Streams()) == 2 })
+
+	// the second publishes its own stream: the other one is an orphan and goes
+	close(create.release)
+	ssftest.Eventually(t, 5*time.Second, "the orphan to be deleted", func() bool { return len(transmitter.Streams()) == 1 })
+	if streamIDs(transmitter)[0] != published || stream.StreamID() != published {
+		t.Fatalf("%v, published %s", streamIDs(transmitter), published)
+	}
+
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 {
+		t.Fatal("not deleted")
+	}
+}
+
+func TestStreamWhoseDeletionIsUnderWayIsNotAdoptedByTheNextRegistration(t *testing.T) {
+	// the first registration stalls after it looked and found no stream; the second creates a
+	// stream and publishes it; the first then creates an orphan and deletes it, which the
+	// transmitter takes its time for; the registrar is restarted meanwhile
+	transmitter := ssftest.New()
+	transmitter.SetSeveralStreamsAllowed(true)
+	discovery := newStall(http.MethodGet, true)
+	var second atomic.Value
+	second.Store("")
+	// the delete of the orphan, the only stream deleted while the second is in use
+	deleting := newStall(http.MethodDelete, false)
+	deleting.when = func(r *http.Request) bool {
+		id := second.Load().(string)
+		return id != "" && r.URL.Query().Get("stream_id") != id
+	}
+	registrar, stream, registered := deafRegistrar(t, transmitter, discovery, deleting)
+	registrar.Start(ctx)
+	waitFor(t, discovery.held, "the look-up")
+	registrar.Stop(ctx)
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the second registration", func() bool { return stream.StreamID() != "" })
+	second.Store(stream.StreamID())
+
+	// the first creates its stream, an orphan, and gets stuck deleting it
+	close(discovery.release)
+	waitFor(t, deleting.held, "the delete of the orphan")
+	orphan := deleting.streamID.Load().(string)
+	if len(transmitter.Streams()) != 2 {
+		t.Fatalf("%v", streamIDs(transmitter))
+	}
+
+	// restarted while the orphan still exists: the third registration finds it and must not
+	// adopt it, it creates a stream of its own instead
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 1 {
+		t.Fatalf("%v", streamIDs(transmitter))
+	}
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the third registration", func() bool { return registered.Load() == 2 })
+	third := stream.StreamID()
+	if third == orphan || third == second.Load() {
+		t.Fatalf("adopted %s", third)
+	}
+
+	close(deleting.release)
+	ssftest.Eventually(t, 5*time.Second, "the orphan to be deleted", func() bool { return len(transmitter.Streams()) == 1 })
+	if streamIDs(transmitter)[0] != third {
+		t.Fatalf("%v", streamIDs(transmitter))
+	}
+
+	registrar.Stop(ctx)
+	if len(transmitter.Streams()) != 0 {
+		t.Fatal("not deleted")
+	}
+}
+
+func TestStopDeletesOnlyAStreamPublishedSinceTheLastStop(t *testing.T) {
+	transmitter := ssftest.New()
+	var deletes atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+		}
+		return transmitter.Client.Transport.RoundTrip(r)
+	})}
+	stream := receiver.NewReceiverStream()
+	registrar := receiver.NewStreamRegistrarForManagedStream(receiver.NewStreamClient(metadataResolver(t, transmitter), client, receiver.FixedToken(ssftest.AccessToken)), stream, ssf.PollStream([]string{"CaepSessionRevoked"}, ""))
+	registrar.DeleteOnShutdown = true
+	registrar.Start(ctx)
+	ssftest.Eventually(t, 5*time.Second, "the registration", func() bool { return registrar.State() == receiver.StreamRegistered })
+	registrar.Stop(ctx)
+	// the receiver still knows the stream; a second Stop does not delete it again
+	registrar.Stop(ctx)
+	if deletes.Load() != 1 || stream.StreamID() == "" {
+		t.Fatalf("%d deletes", deletes.Load())
+	}
+}

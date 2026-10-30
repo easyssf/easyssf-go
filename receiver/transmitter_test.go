@@ -4,10 +4,12 @@ package receiver_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,6 +369,66 @@ func TestStreamManagementCallsRefuseRedirectToHTTP(t *testing.T) {
 	resolver, _ := receiver.NewMetadataResolver(transmitter.Issuer(), nil, client, receiver.URIPolicy{}, nil)
 	streams := receiver.NewStreamClient(resolver, client, receiver.FixedToken(ssftest.AccessToken))
 	if _, err := streams.Streams(ctx); err == nil || !strings.Contains(err.Error(), "another origin") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// sized answers every request with a body of the given size, with or without its
+// Content-Length, and counts the requests.
+type sized struct {
+	size          int
+	contentLength bool
+	requests      atomic.Int32
+}
+
+func (s *sized) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.requests.Add(1)
+	body := `{"issuer":"` + strings.Repeat("x", s.size-len(`{"issuer":""}`)) + `"}`
+	length := int64(-1)
+	if s.contentLength {
+		length = int64(len(body))
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(body)), ContentLength: length, Request: r}, nil
+}
+
+func sizedResolver(t *testing.T, transport *sized, maxResponseSize int64) *receiver.MetadataResolver {
+	t.Helper()
+	metadataURL, _ := url.Parse("https://transmitter.example/metadata")
+	resolver, err := receiver.NewMetadataResolver("https://transmitter.example", metadataURL, &http.Client{Transport: transport}, receiver.URIPolicy{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver.MaxResponseSize = maxResponseSize
+	resolver.Retry = receiver.RetryOptions{MaxRetries: 2, InitialBackoff: time.Millisecond}
+	return resolver
+}
+
+func TestRejectsResponseLargerThanTheMaximum(t *testing.T) {
+	for _, contentLength := range []bool{true, false} {
+		transport := &sized{size: 101, contentLength: contentLength}
+		_, err := sizedResolver(t, transport, 100).Resolve(ctx)
+		if !errors.Is(err, receiver.ErrResponseTooLarge) {
+			t.Fatalf("content length %v: %v", contentLength, err)
+		}
+		if transport.requests.Load() != 1 {
+			t.Fatalf("content length %v: tried %d times, a larger response comes again", contentLength, transport.requests.Load())
+		}
+	}
+}
+
+func TestAcceptsResponseOfTheMaximumSize(t *testing.T) {
+	for _, contentLength := range []bool{true, false} {
+		_, err := sizedResolver(t, &sized{size: 100, contentLength: contentLength}, 100).Resolve(ctx)
+		if errors.Is(err, receiver.ErrResponseTooLarge) {
+			t.Fatalf("content length %v: %v", contentLength, err)
+		}
+	}
+}
+
+func TestBoundsResponsesToFourMiBByDefault(t *testing.T) {
+	transport := &sized{size: int(receiver.DefaultMaxResponseSize) + 1}
+	if _, err := sizedResolver(t, transport, 0).Resolve(ctx); !errors.Is(err, receiver.ErrResponseTooLarge) {
 		t.Fatalf("%v", err)
 	}
 }

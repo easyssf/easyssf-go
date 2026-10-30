@@ -3,7 +3,7 @@ module github.com/easyssf/easyssf-go
 go 1.26.0
 
 require (
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/jackc/pgx/v5 v5.9.2
 	modernc.org/sqlite v1.39.0

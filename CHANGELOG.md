@@ -5,8 +5,30 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+### Security
+
+- The acknowledgements `Poller.Stop` sends with a last request went to the poll endpoint without
+  the URI policy check of the other poll requests, so a poll endpoint that the stream had moved
+  to plain `http` meanwhile would have received the access token. The check now sits in the one
+  method every poll request passes.
+- A response body larger than the maximum was cut off at 4 MiB and failed later as invalid JSON;
+  it now fails the call with `receiver.ErrResponseTooLarge`, from the `Content-Length` where the
+  transmitter sends one, and is not tried again. The maximum is configurable as
+  `easyssf.receiver.http.max-response-size` (`"4MB"`, the units of Spring's `DataSize`), as in the
+  Java library.
+
 ### Added
 
+- `receiver.DefaultMaxResponseSize`, `receiver.ErrResponseTooLarge`, `receiver.ByteSize` (binds
+  from `"4MB"`), `Config.HTTP.MaxResponseSize` and a `MaxResponseSize` next to the `Timeout` of
+  `MetadataResolver`, `HTTPJWKSetSource`, `StreamClient`, `PollerOptions` and
+  `ClientCredentialsOptions`.
+- `StreamRegistrar.StopTimeout` (`receiver.DefaultStreamStopTimeout`, 5 seconds): how long `Stop`
+  waits for a registration in flight, and no longer than its context allows. It waited without
+  limit before.
+- `ssftest.TestTransmitter.SetSeveralStreamsAllowed`, as in the Java library.
+- The README describes stream management with several instances, and that
+  `stream.delete-on-shutdown` is for a single one.
 - `receiver.ErrRegistrationSuperseded`: what `StreamRegistrar.Register` returns when a later
   `Start` or `Stop` overtook the registration, or its context ended, so that the stream it
   registered was not published; `errors.Is` tells it from a failure at the transmitter.
@@ -16,8 +38,18 @@ All notable changes to this project will be documented in this file. The format 
 - The poller checks that a SET of a poll response is listed under its own `jti` (RFC 8936,
   section 2.3: the member name in `sets` is the `jti` of the SET). A SET listed under another
   name is not handled and is reported under that name as `invalid_request`, so that the
-  acknowledgement never clears a different SET at the transmitter. The Java library acknowledges
-  by the name without the check.
+  acknowledgement never clears a different SET at the transmitter. The Java library does the
+  same now.
+- `StreamClient` checks the issuer of every stream configuration the transmitter returns, not
+  only of a created one: `Stream`, `Streams`, `UpdateStream` and `ReplaceStream` return an
+  `IssuerMismatchError` as `CreateStream` did, as the SETs of a stream with another issuer would
+  not verify. `StreamRegistrar` deletes a stream it created with the wrong issuer, also on a
+  direct `Register`, and leaves an existing one alone; it fails without retrying either way.
+- `Poller.Stop` logs a warning when the polling goroutine is still handling a SET after five
+  seconds; it ends once the handlers return.
+- The error of a metadata resolution that failed keeps the errors of each location, for
+  `errors.Is` and `errors.As`; the message reads `could not resolve SSF transmitter metadata:
+  <url>: <error>; ...`.
 - Go 1.26 is the minimum. The `conformance` module required it since 0.6.0 while the main module
   said 1.25; the Go 1.25 leg of CI only passed because the toolchain of the conformance module was
   downloaded on the fly, which `actions/setup-go` v6 and later forbid (`GOTOOLCHAIN=local`). Both
@@ -47,6 +79,13 @@ All notable changes to this project will be documented in this file. The format 
   superseded, or whose context ended, publishes nothing, neither the stream it registered nor
   the failure it ran into, so that it cannot overwrite the stream or the state of the later
   start; the check is made under the lock the lifecycle moves under.
+- A stream that a superseded registration created was left behind at the transmitter. With
+  `DeleteOnShutdown` it is deleted now; if the registrar was started again meanwhile, it is left
+  to the new registration, which adopts it if it finds it and deletes it once it publishes
+  another one, and `Stop` deletes what is left. A stream whose deletion is under way is not
+  adopted. `Stop` deletes only a stream published since the last `Stop`, not again the one an
+  earlier `Stop` deleted, and `Start` waits for a `Stop` under way, its deletes included. As in
+  the Java library.
 - The conformance tests start again on GitHub's current Ubuntu runners: their MongoDB is 9.0.4 now,
   pinned by digest. MongoDB 8.0 and newer exit at startup on a Linux kernel from 6.19 up to 7.0.13,
   and before 9.0.4 they took Ubuntu's 7.0 kernels for 7.0.0 (SERVER-121912, SERVER-131779), so the
