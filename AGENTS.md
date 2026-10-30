@@ -10,7 +10,7 @@ Go building blocks for the OpenID Shared Signals Framework (SSF 1.0) with CAEP, 
 Events (RFC 9967): a **receiver** library on `net/http`, database stores on `database/sql`, and
 an in-process test transmitter. The code sits in the authentication path of its users, so
 correctness of verification beats convenience everywhere. Receiver only, no transmitter.
-Apache-2.0. Status: released as 0.6.0, at parity with easyssf 0.6.0 for Java; the version
+Apache-2.0. Status: released as 0.7.0, at parity with easyssf 0.7.0 for Java; the version
 follows the Java library, pre-1.0, breaking changes are acceptable when the CHANGELOG says so.
 A release is a signed-off "Release X.Y.Z" commit that moves the `Unreleased` section of the
 CHANGELOG under the version, and an annotated tag `vX.Y.Z` on it; the `conformance` module is

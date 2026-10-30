@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+A release of hardening, at parity with easyssf 0.7.0 for Java. A host name like
+`127.attacker.example` no longer passes for loopback, the poll endpoint is held to the URI policy
+before every request that carries the access token, and responses from the transmitter fail above
+a configurable maximum, 4 MiB by default. A polled SET must be listed under its own `jti`, and
+every stream configuration the transmitter returns has its issuer checked, not only a created
+one. Stopping and starting a poller, a registrar or the whole receiver again no longer leaves a
+goroutine, a stale registration or a stream at the transmitter behind. Go 1.26 is the minimum.
+
 ### Security
 
 - The acknowledgements `Poller.Stop` sends with a last request went to the poll endpoint without
@@ -189,5 +199,6 @@ passing the four receiver test plans of the OpenID conformance suite.
   handlers, the stores on SQLite (PostgreSQL and MySQL with `EASYSSF_DATABASE_TESTS=true`) and
   two receiver instances on one database.
 
-[Unreleased]: https://github.com/easyssf/easyssf-go/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/easyssf/easyssf-go/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/easyssf/easyssf-go/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/easyssf/easyssf-go/releases/tag/v0.6.0

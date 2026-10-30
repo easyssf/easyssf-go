@@ -28,7 +28,7 @@ rcv.Start(ctx)                                        // registers the stream, s
 mux.Handle("POST "+rcv.PushEndpointPath(), rcv.PushHandler()) // POST /ssf/push
 ```
 
-Version 0.6.0 is at feature parity with [easyssf 0.6.0 for Java](https://github.com/easyssf/easyssf);
+Version 0.7.0 is at feature parity with [easyssf 0.7.0 for Java](https://github.com/easyssf/easyssf);
 the version follows the Java library, and below 1.0 a release may break the API when the
 CHANGELOG says so. Go 1.26 or later, no cgo, Apache-2.0.
 
