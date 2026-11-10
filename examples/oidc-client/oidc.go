@@ -183,7 +183,7 @@ func (o *OIDC) FinishLogin(ctx context.Context, login *LoginState, query url.Val
 // verifyIDToken checks the signature against the JWK Set of the provider and the claims OpenID
 // Connect Core 1.0, section 3.1.3.7 requires of a client.
 func (o *OIDC) verifyIDToken(ctx context.Context, idToken, nonce string) (ssf.Claims, error) {
-	jws, err := jose.ParseSigned(idToken, []jose.SignatureAlgorithm{jose.RS256, jose.PS256, jose.ES256})
+	jws, err := jose.ParseSignedCompact(idToken, []jose.SignatureAlgorithm{jose.RS256, jose.PS256, jose.ES256})
 	if err != nil {
 		return nil, fmt.Errorf("the ID token is not a signed JWT: %w", err)
 	}

@@ -54,7 +54,7 @@ var acceptedAlgorithms = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.
 // keys again once for an unknown kid, as identity providers rotate them), issued by the expected issuer
 // and not expired. The audience is not checked, see below.
 func (a *AccessTokens) Validate(ctx context.Context, token string) (AccessToken, error) {
-	jws, err := jose.ParseSigned(token, acceptedAlgorithms)
+	jws, err := jose.ParseSignedCompact(token, acceptedAlgorithms)
 	if err != nil {
 		return nil, err
 	}
