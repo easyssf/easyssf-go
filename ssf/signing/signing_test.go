@@ -21,7 +21,7 @@ func claims() ssf.Claims {
 
 func verify(t *testing.T, signer *signing.Signer, encoded string) (map[string]any, jose.Header) {
 	t.Helper()
-	jws, err := jose.ParseSigned(encoded, []jose.SignatureAlgorithm{signer.Algorithm()})
+	jws, err := jose.ParseSignedCompact(encoded, []jose.SignatureAlgorithm{signer.Algorithm()})
 	if err != nil {
 		t.Fatal(err)
 	}
